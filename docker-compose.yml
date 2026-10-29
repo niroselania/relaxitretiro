@@ -4,7 +4,7 @@ services:
     container_name: deposito-stock
     restart: unless-stopped
     ports:
-      - "${PORT:-8000}:8000"
+      - "${PORT:-8001}:8000"
     environment:
       DATABASE_PATH: /data/deposito.sqlite3
       SECRET_KEY: ${SECRET_KEY:?Definí SECRET_KEY en Portainer}
