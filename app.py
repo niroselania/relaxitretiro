@@ -30,11 +30,12 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE TABLE IF NOT EXISTS containers (
   id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
-  location TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
+  location TEXT NOT NULL DEFAULT '', site TEXT NOT NULL DEFAULT 'Bariloche', active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY, sku TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+  item TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS stock (
@@ -77,6 +78,16 @@ def close_db(_error=None):
 def init_db():
     db = get_db()
     db.executescript(SCHEMA)
+    # Keep existing local databases usable when new product and site fields are added.
+    for table, column, declaration in [
+        ("containers", "site", "TEXT NOT NULL DEFAULT 'Bariloche'"),
+        ("products", "item", "TEXT NOT NULL DEFAULT ''"),
+        ("products", "color", "TEXT NOT NULL DEFAULT ''"),
+        ("products", "size", "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
     username = os.environ.get("ADMIN_USERNAME", "admin").strip()
     password = os.environ.get("ADMIN_PASSWORD", "")
     if not app.config["SECRET_KEY"] or not password:
@@ -220,12 +231,16 @@ def containers():
 def create_container():
     name = request.form.get("name", "").strip()
     location = request.form.get("location", "").strip()
+    site = request.form.get("site", "").strip()
     if not name:
         flash("Ingresá un nombre para el contenedor.", "error")
         return redirect(url_for("containers"))
+    if site not in ("Bariloche", "Retiro"):
+        flash("Elegí Bariloche o Retiro como depósito.", "error")
+        return redirect(url_for("containers"))
     db = get_db()
     code = next_container_code(db)
-    db.execute("INSERT INTO containers(code,name,location,created_at) VALUES(?,?,?,?)", (code, name, location, now_text()))
+    db.execute("INSERT INTO containers(code,name,location,site,created_at) VALUES(?,?,?,?,?)", (code, name, location, site, now_text()))
     db.commit()
     flash(f"Contenedor creado. Código {code}.", "success")
     return redirect(url_for("container_detail", container_id=db.execute("SELECT id FROM containers WHERE code=?", (code,)).fetchone()[0]))
@@ -270,12 +285,26 @@ def print_container_label(container_id):
 @app.route("/productos")
 @login_required
 def products():
+    code = request.args.get("codigo", "").strip()
     q = request.args.get("q", "").strip()
-    rows = get_db().execute("""SELECT p.*,COALESCE(SUM(s.quantity),0) units
-      FROM products p LEFT JOIN stock s ON s.product_id=p.id
-      WHERE (?='' OR p.name LIKE ? OR p.sku LIKE ?)
-      GROUP BY p.id ORDER BY p.name COLLATE NOCASE""", (q, f"%{q}%", f"%{q}%")).fetchall()
-    return render_template("products.html", products=rows, q=q)
+    sites = [site for site in request.args.getlist("deposito") if site in ("Bariloche", "Retiro")]
+    if not request.args:
+        sites = ["Bariloche", "Retiro"]
+    db = get_db()
+    if sites:
+        placeholders = ",".join("?" for _ in sites)
+        rows = db.execute(f"""SELECT p.*,COALESCE(SUM(s.quantity),0) units,
+          GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · ') locations
+          FROM products p JOIN stock s ON s.product_id=p.id
+          JOIN containers c ON c.id=s.container_id
+          WHERE c.active=1 AND c.site IN ({placeholders})
+            AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
+            AND (?='' OR p.sku LIKE ?)
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
+          (*sites, q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", code, f"%{code}%")).fetchall()
+    else:
+        rows = []
+    return render_template("products.html", products=rows, q=q, code=code, sites=sites)
 
 
 @app.post("/productos/nuevo")
@@ -283,13 +312,16 @@ def products():
 def create_product():
     sku = request.form.get("sku", "").strip()
     name = request.form.get("name", "").strip()
+    item = request.form.get("item", "").strip()
+    color = request.form.get("color", "").strip()
+    size = request.form.get("size", "").strip()
     description = request.form.get("description", "").strip()
     if not sku or not name:
         flash("El código/SKU y el nombre son obligatorios.", "error")
         return redirect(url_for("products"))
     try:
         db = get_db()
-        db.execute("INSERT INTO products(sku,name,description,created_at) VALUES(?,?,?,?)", (sku, name, description, now_text()))
+        db.execute("INSERT INTO products(sku,name,item,color,size,description,created_at) VALUES(?,?,?,?,?,?,?)", (sku, name, item, color, size, description, now_text()))
         db.commit()
     except sqlite3.IntegrityError:
         flash("Ese código de producto ya existe.", "error")
@@ -391,8 +423,8 @@ def import_data():
             db = get_db()
             parsed = {}
             for sheet_name, required in {
-                "Contenedores": ["codigo", "nombre", "ubicacion"],
-                "Productos": ["sku", "nombre", "descripcion"],
+                "Contenedores": ["codigo", "nombre", "ubicacion", "sucursal"],
+                "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion"],
                 "Stock": ["codigo_contenedor", "sku", "cantidad"],
             }.items():
                 sheet = workbook[sheet_name]
@@ -411,13 +443,16 @@ def import_data():
                 raise ValueError("Hay códigos o SKU vacíos o repetidos en el archivo.")
             with db:
                 for r in parsed["Contenedores"]:
-                    db.execute("""INSERT INTO containers(code,name,location,created_at) VALUES(?,?,?,?)
-                      ON CONFLICT(code) DO UPDATE SET name=excluded.name,location=excluded.location,active=1""",
-                      (str(r["codigo"]).strip(),str(r["nombre"]).strip(),str(r.get("ubicacion") or "").strip(),now_text()))
+                    site = str(r.get("sucursal") or r.get("deposito") or "").strip().title()
+                    if site not in ("Bariloche", "Retiro"):
+                        raise ValueError("La sucursal de cada contenedor debe ser Bariloche o Retiro.")
+                    db.execute("""INSERT INTO containers(code,name,location,site,created_at) VALUES(?,?,?,?,?)
+                      ON CONFLICT(code) DO UPDATE SET name=excluded.name,location=excluded.location,site=excluded.site,active=1""",
+                      (str(r["codigo"]).strip(),str(r["nombre"]).strip(),str(r.get("ubicacion") or "").strip(),site,now_text()))
                 for r in parsed["Productos"]:
-                    db.execute("""INSERT INTO products(sku,name,description,created_at) VALUES(?,?,?,?)
-                      ON CONFLICT(sku) DO UPDATE SET name=excluded.name,description=excluded.description""",
-                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("descripcion") or "").strip(),now_text()))
+                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,created_at) VALUES(?,?,?,?,?,?,?)
+                      ON CONFLICT(sku) DO UPDATE SET name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,description=excluded.description""",
+                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),now_text()))
                 for r in parsed["Stock"]:
                     cid = db.execute("SELECT id FROM containers WHERE code=?", (str(r["codigo_contenedor"]).strip(),)).fetchone()[0]
                     pid = db.execute("SELECT id FROM products WHERE sku=?", (str(r["sku"]).strip(),)).fetchone()[0]
@@ -438,8 +473,8 @@ def import_data():
 def import_template():
     wb = Workbook()
     sheets = {
-        "Contenedores": ["codigo", "nombre", "ubicacion"],
-        "Productos": ["sku", "nombre", "descripcion"],
+        "Contenedores": ["codigo", "nombre", "ubicacion", "sucursal"],
+        "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion"],
         "Stock": ["codigo_contenedor", "sku", "cantidad"],
     }
     for index, (name, headers) in enumerate(sheets.items()):
@@ -461,14 +496,14 @@ def export_data():
     db = get_db()
     wb = Workbook()
     for index, (name, query) in enumerate([
-        ("Contenedores", "SELECT code codigo,name nombre,location ubicacion FROM containers WHERE active=1 ORDER BY code"),
-        ("Productos", "SELECT sku,name nombre,description descripcion FROM products ORDER BY sku"),
+        ("Contenedores", "SELECT code codigo,name nombre,location ubicacion,site sucursal FROM containers WHERE active=1 ORDER BY code"),
+        ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion FROM products ORDER BY sku"),
         ("Stock", "SELECT c.code codigo_contenedor,p.sku,s.quantity cantidad FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id WHERE s.quantity>0 ORDER BY c.code,p.sku"),
     ]):
         ws = wb.active if index == 0 else wb.create_sheet()
         ws.title = name
         rows = db.execute(query).fetchall()
-        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion"],"Productos":["sku","nombre","descripcion"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
+        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
         for row in rows:
             ws.append(list(row))
         ws.freeze_panes = "A2"

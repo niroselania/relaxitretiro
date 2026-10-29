@@ -7,7 +7,8 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Inicio de sesión y cambio de contraseña desde **Cuenta**.
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
-- Catálogo de productos, stock por contenedor, consulta y búsqueda por ubicación.
+- Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
+- Stock por contenedor, consulta y búsqueda por ubicación.
 - Lector de código por teclado USB (los lectores configurados como teclado suelen enviar el código y Enter).
 - Ingresos, salidas y traslados, con control de cantidad disponible y registro de movimientos.
 - Importación y exportación de contenedores, productos y stock en Excel.
@@ -54,17 +55,19 @@ docker compose up -d --build
 
 Desde **Importar Excel**, descargá `plantilla_deposito.xlsx`. El archivo contiene tres hojas con estas columnas:
 
-- `Contenedores`: `codigo`, `nombre`, `ubicacion`
-- `Productos`: `sku`, `nombre`, `descripcion`
+- `Contenedores`: `codigo`, `nombre`, `ubicacion`, `sucursal` (Bariloche o Retiro)
+- `Productos`: `sku`, `nombre`, `item`, `color`, `talle`, `descripcion`
 - `Stock`: `codigo_contenedor`, `sku`, `cantidad`
 
-Las filas de stock relacionan cada SKU con un contenedor mediante sus códigos. Usá códigos de barras existentes en la columna `codigo` para mantenerlos; si el código queda vacío la plantilla no lo importará, y el alta manual genera uno nuevo. La aplicación guarda estos códigos como texto y los representa en Code 128.
+Las filas de stock relacionan cada SKU con un contenedor mediante sus códigos. Usá códigos de barras existentes en la columna `codigo` para mantenerlos. La sucursal debe ser Bariloche o Retiro. La aplicación guarda los códigos como texto y los representa en Code 128.
 
 ## Archivos
 
 - `app.py`: servidor y reglas del inventario.
 - `templates/` y `static/`: interfaz web.
 - `compose.yaml`: Stack que construye la imagen desde la carpeta.
+- `docker-compose.yml`: nombre predeterminado para la ruta Compose de Portainer; construye la imagen desde el repositorio.
+- `compose.yaml`: misma configuración, con nombre Compose moderno.
 - `compose-portainer.yaml`: Stack para Portainer usando una imagen ya construida.
 
 ## Consideraciones de esta primera entrega
