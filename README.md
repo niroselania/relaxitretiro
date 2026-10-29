@@ -8,12 +8,13 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
 - Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
+- El catálogo permite archivar referencias que no se tienen y restaurarlas si hace falta.
 - Stock por contenedor, consulta y búsqueda por ubicación.
 - Lector de código por teclado USB (los lectores configurados como teclado suelen enviar el código y Enter).
 - Ingresos, salidas y traslados, con control de cantidad disponible y registro de movimientos.
 - Importación y exportación de contenedores, productos y stock en Excel.
 
-La plantilla inicial importa el inventario actual. Todavía no carga el historial de movimientos del sistema anterior. Cuando se consiga una exportación real, se podrá ajustar el importador a sus columnas. La importación hace altas/actualizaciones de los códigos incluidos y conserva los códigos existentes; las filas que no aparezcan en el nuevo archivo no se eliminan automáticamente.
+El importador admite la planilla original de productos con una hoja `elementos` y la plantilla de tres hojas. La planilla original trae cantidades, pero no identifica ubicación. Esas cantidades se guardan como stock importado sin ubicar y se trasladan a un contenedor desde **Movimientos** usando `Planilla importada sin ubicación` como origen. Así se conserva el total y queda disponible por Bariloche o Retiro después de asignarlo. La importación no carga el historial anterior de movimientos. La importación hace altas/actualizaciones de los códigos incluidos y conserva los códigos existentes; las filas que no aparezcan en un nuevo archivo no se eliminan automáticamente.
 
 ## Despliegue desde Portainer
 
@@ -56,8 +57,10 @@ docker compose up -d --build
 Desde **Importar Excel**, descargá `plantilla_deposito.xlsx`. El archivo contiene tres hojas con estas columnas:
 
 - `Contenedores`: `codigo`, `nombre`, `ubicacion`, `sucursal` (Bariloche o Retiro)
-- `Productos`: `sku`, `nombre`, `item`, `color`, `talle`, `descripcion`
+- `Productos`: `sku`, `nombre`, `item`, `color`, `talle`, `descripcion`, `unidades_sin_ubicar`, `ubicaciones`
 - `Stock`: `codigo_contenedor`, `sku`, `cantidad`
+
+La hoja `elementos` del Excel original se transforma directamente: `codigo` pasa a ser el código del producto, y se conservan nombre, item, color, talle, descripción, unidades y ubicaciones.
 
 Las filas de stock relacionan cada SKU con un contenedor mediante sus códigos. Usá códigos de barras existentes en la columna `codigo` para mantenerlos. La sucursal debe ser Bariloche o Retiro. La aplicación guarda los códigos como texto y los representa en Code 128.
 

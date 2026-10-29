@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS containers (
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY, sku TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
   item TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+  description TEXT NOT NULL DEFAULT '', legacy_units INTEGER NOT NULL DEFAULT 0,
+  source_location TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS stock (
   container_id INTEGER NOT NULL REFERENCES containers(id),
@@ -46,7 +48,7 @@ CREATE TABLE IF NOT EXISTS stock (
 CREATE TABLE IF NOT EXISTS movements (
   id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id),
   from_container_id INTEGER REFERENCES containers(id), to_container_id INTEGER REFERENCES containers(id),
-  product_id INTEGER NOT NULL REFERENCES products(id), quantity INTEGER NOT NULL CHECK(quantity > 0),
+  from_source TEXT NOT NULL DEFAULT 'external', product_id INTEGER NOT NULL REFERENCES products(id), quantity INTEGER NOT NULL CHECK(quantity > 0),
   note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_movements_created ON movements(created_at DESC);
@@ -84,6 +86,10 @@ def init_db():
         ("products", "item", "TEXT NOT NULL DEFAULT ''"),
         ("products", "color", "TEXT NOT NULL DEFAULT ''"),
         ("products", "size", "TEXT NOT NULL DEFAULT ''"),
+        ("products", "legacy_units", "INTEGER NOT NULL DEFAULT 0"),
+        ("products", "source_location", "TEXT NOT NULL DEFAULT ''"),
+        ("products", "active", "INTEGER NOT NULL DEFAULT 1"),
+        ("movements", "from_source", "TEXT NOT NULL DEFAULT 'external'"),
     ]:
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
@@ -197,7 +203,8 @@ def dashboard():
         "movements": db.execute("SELECT COUNT(*) FROM movements WHERE date(created_at)=date('now','localtime')").fetchone()[0],
     }
     recent = db.execute("""SELECT m.*, p.sku, p.name product,
-      f.name from_name, t.name to_name
+      CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' ELSE 'Ingreso externo' END from_name,
+      t.name to_name
       FROM movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN containers f ON f.id=m.from_container_id
       LEFT JOIN containers t ON t.id=m.to_container_id
@@ -287,24 +294,77 @@ def print_container_label(container_id):
 def products():
     code = request.args.get("codigo", "").strip()
     q = request.args.get("q", "").strip()
-    sites = [site for site in request.args.getlist("deposito") if site in ("Bariloche", "Retiro")]
+    requested_sites = request.args.getlist("deposito")
+    sites = [site for site in ("Bariloche", "Retiro") if site in requested_sites]
     if not request.args:
         sites = ["Bariloche", "Retiro"]
     db = get_db()
-    if sites:
+    archived = request.args.get("archivados") == "1"
+    if archived:
+        rows = db.execute("""SELECT p.*,p.legacy_units+COALESCE(SUM(s.quantity),0) units,
+          COALESCE(GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · '),p.source_location,'') locations
+          FROM products p LEFT JOIN stock s ON s.product_id=p.id AND s.quantity>0
+          LEFT JOIN containers c ON c.id=s.container_id
+          WHERE p.active=0 AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ?)
+            AND (?='' OR p.sku LIKE ?)
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
+          (q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%")).fetchall()
+    elif len(sites) == 2:
         placeholders = ",".join("?" for _ in sites)
-        rows = db.execute(f"""SELECT p.*,COALESCE(SUM(s.quantity),0) units,
-          GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · ') locations
-          FROM products p JOIN stock s ON s.product_id=p.id
-          JOIN containers c ON c.id=s.container_id
-          WHERE c.active=1 AND c.site IN ({placeholders})
+        rows = db.execute(f"""SELECT p.*,p.legacy_units+COALESCE(SUM(CASE WHEN c.id IS NOT NULL THEN s.quantity ELSE 0 END),0) units,
+          CASE WHEN p.legacy_units>0 THEN 'Pendiente de ubicación (' || p.legacy_units || ')'
+            || CASE WHEN GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') IS NOT NULL
+              THEN ' · ' || GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · ') ELSE '' END
+            ELSE COALESCE(GROUP_CONCAT(CASE WHEN c.id IS NOT NULL THEN c.name || ' (' || s.quantity || ')' END, ' · '),NULLIF(p.source_location,''),'') END locations
+          FROM products p LEFT JOIN stock s ON s.product_id=p.id AND s.quantity>0
+          LEFT JOIN containers c ON c.id=s.container_id AND c.active=1 AND c.site IN ({placeholders})
+          WHERE p.active=1
             AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
             AND (?='' OR p.sku LIKE ?)
           GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
           (*sites, q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", code, f"%{code}%")).fetchall()
+    elif len(sites) == 1:
+        rows = db.execute("""SELECT p.*,COALESCE(SUM(s.quantity),0) units,
+          GROUP_CONCAT(c.name || ' (' || s.quantity || ')', ' · ') locations
+          FROM products p JOIN stock s ON s.product_id=p.id AND s.quantity>0
+          JOIN containers c ON c.id=s.container_id AND c.active=1 AND c.site=?
+          WHERE p.active=1
+            AND (?='' OR p.sku LIKE ? OR p.name LIKE ? OR p.item LIKE ? OR p.color LIKE ? OR p.size LIKE ? OR p.description LIKE ? OR c.name LIKE ? OR c.location LIKE ?)
+            AND (?='' OR p.sku LIKE ?)
+          GROUP BY p.id ORDER BY p.sku COLLATE NOCASE""",
+          (sites[0],q,f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",code,f"%{code}%")).fetchall()
     else:
         rows = []
-    return render_template("products.html", products=rows, q=q, code=code, sites=sites)
+    return render_template("products.html", products=rows, q=q, code=code, sites=sites, archived=archived)
+
+
+@app.post("/productos/<int:product_id>/archivar")
+@login_required
+def archive_product(product_id):
+    db = get_db()
+    product = db.execute("SELECT id FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
+    if not product:
+        abort(404)
+    held = db.execute("SELECT COALESCE(SUM(quantity),0) FROM stock WHERE product_id=?", (product_id,)).fetchone()[0]
+    if held:
+        flash("No se puede archivar: todavía hay unidades ubicadas en contenedores.", "error")
+    else:
+        db.execute("UPDATE products SET active=0,legacy_units=0 WHERE id=?", (product_id,))
+        db.commit()
+        flash("Producto archivado. Podés recuperarlo desde Productos archivados.", "success")
+    return redirect(url_for("products", deposito=["Retiro", "Bariloche"]))
+
+
+@app.post("/productos/<int:product_id>/restaurar")
+@login_required
+def restore_product(product_id):
+    db = get_db()
+    if not db.execute("SELECT 1 FROM products WHERE id=? AND active=0", (product_id,)).fetchone():
+        abort(404)
+    db.execute("UPDATE products SET active=1 WHERE id=?", (product_id,))
+    db.commit()
+    flash("Producto recuperado del archivo.", "success")
+    return redirect(url_for("products", deposito=["Retiro", "Bariloche"]))
 
 
 @app.post("/productos/nuevo")
@@ -348,7 +408,7 @@ def scan():
     code = request.args.get("codigo", "").strip()
     db = get_db()
     container = db.execute("SELECT * FROM containers WHERE code=? AND active=1", (code,)).fetchone() if code else None
-    product = db.execute("SELECT * FROM products WHERE sku=?", (code,)).fetchone() if code else None
+    product = db.execute("SELECT * FROM products WHERE sku=? AND active=1", (code,)).fetchone() if code else None
     container_stock = []
     product_stock = []
     if container:
@@ -367,13 +427,19 @@ def movements():
     db = get_db()
     if request.method == "POST":
         product_id = request.form.get("product_id", type=int)
-        from_id = request.form.get("from_id", type=int) or None
+        from_value = request.form.get("from_id", "")
+        legacy_source = from_value == "legacy"
+        from_id = None if legacy_source else (request.form.get("from_id", type=int) or None)
         to_id = request.form.get("to_id", type=int) or None
         quantity = request.form.get("quantity", type=int)
         note = request.form.get("note", "").strip()
-        product = db.execute("SELECT id FROM products WHERE id=?", (product_id,)).fetchone()
-        if not product or not quantity or quantity < 1 or (from_id is None and to_id is None) or from_id == to_id:
+        product = db.execute("SELECT id,legacy_units FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
+        if not product or not quantity or quantity < 1 or (from_id is None and not legacy_source and to_id is None):
             flash("Revisá producto, cantidad, origen y destino.", "error")
+        elif legacy_source and (not to_id or product["legacy_units"] < quantity):
+            flash("La cantidad supera las unidades importadas pendientes o falta elegir el contenedor de destino.", "error")
+        elif from_id and from_id == to_id:
+            flash("El origen y el destino deben ser distintos.", "error")
         elif from_id and not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (from_id,)).fetchone():
             flash("El contenedor de origen no existe o está inactivo.", "error")
         elif to_id and not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (to_id,)).fetchone():
@@ -381,7 +447,9 @@ def movements():
         else:
             try:
                 with db:
-                    if from_id:
+                    if legacy_source:
+                        db.execute("UPDATE products SET legacy_units=legacy_units-? WHERE id=?", (quantity,product_id))
+                    elif from_id:
                         row = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (from_id, product_id)).fetchone()
                         if not row or row["quantity"] < quantity:
                             raise ValueError("No hay esa cantidad disponible en el origen.")
@@ -393,19 +461,60 @@ def movements():
                     if to_id:
                         db.execute("""INSERT INTO stock(container_id,product_id,quantity) VALUES(?,?,?)
                           ON CONFLICT(container_id,product_id) DO UPDATE SET quantity=quantity+excluded.quantity""", (to_id, product_id, quantity))
-                    db.execute("""INSERT INTO movements(created_at,user_id,from_container_id,to_container_id,product_id,quantity,note)
-                      VALUES(?,?,?,?,?,?,?)""", (now_text(),session["user_id"],from_id,to_id,product_id,quantity,note))
+                    db.execute("""INSERT INTO movements(created_at,user_id,from_container_id,to_container_id,from_source,product_id,quantity,note)
+                      VALUES(?,?,?,?,?,?,?,?)""", (now_text(),session["user_id"],from_id,to_id,"legacy" if legacy_source else "external",product_id,quantity,note))
                 flash("Movimiento registrado.", "success")
                 return redirect(url_for("movements"))
             except ValueError as exc:
                 flash(str(exc), "error")
-    rows = db.execute("""SELECT m.*,p.sku,p.name product,f.name from_name,t.name to_name
+    rows = db.execute("""SELECT m.*,p.sku,p.name product,
+      CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' ELSE 'Ingreso externo' END from_name,
+      t.name to_name
       FROM movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN containers f ON f.id=m.from_container_id LEFT JOIN containers t ON t.id=m.to_container_id
       ORDER BY m.id DESC LIMIT 100""").fetchall()
     return render_template("movements.html", rows=rows,
-      products=db.execute("SELECT * FROM products ORDER BY name COLLATE NOCASE").fetchall(),
+      products=db.execute("SELECT * FROM products WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall(),
       containers=db.execute("SELECT * FROM containers WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall())
+
+
+def import_elementos_sheet(db, sheet):
+    headers = [str(cell or "").strip().lower() for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+    required = ["codigo", "nombre", "item", "color", "talle", "descripcion", "unidades", "ubicaciones"]
+    if not set(required).issubset(headers):
+        raise ValueError("La hoja elementos debe incluir codigo, nombre, item, color, talle, descripcion, unidades y ubicaciones.")
+    rows = [dict(zip(headers, row)) for row in sheet.iter_rows(min_row=2, values_only=True) if any(v is not None for v in row)]
+    seen = set()
+    total_units = 0
+    cleaned = []
+    for row_number, row in enumerate(rows, start=2):
+        code = str(row.get("codigo") or "").strip()
+        name = str(row.get("nombre") or "").strip()
+        if not code or not name:
+            raise ValueError(f"Falta código o nombre en la fila {row_number}.")
+        if code in seen:
+            raise ValueError(f"El código {code} está repetido en la planilla.")
+        seen.add(code)
+        raw_units = row.get("unidades")
+        try:
+            units = int(raw_units or 0)
+            if units < 0 or (raw_units is not None and float(raw_units) != units):
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError(f"La cantidad de unidades no es un entero válido en la fila {row_number}.")
+        total_units += units
+        cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip(),
+          str(row.get("talle") or "").strip(),str(row.get("descripcion") or "").strip(),units,
+          str(row.get("ubicaciones") or "").strip()))
+    with db:
+        for item in cleaned:
+            db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
+              name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
+              description=excluded.description,source_location=excluded.source_location,active=1""",
+              (*item,now_text()))
+    location_count = sum(bool(item[7]) for item in cleaned)
+    return len(cleaned), total_units, location_count
 
 
 @app.route("/importar", methods=["GET", "POST"])
@@ -418,8 +527,13 @@ def import_data():
             return redirect(url_for("import_data"))
         try:
             workbook = load_workbook(upload, read_only=True, data_only=True)
+            if "elementos" in workbook.sheetnames:
+                db = get_db()
+                count, total_units, location_count = import_elementos_sheet(db, workbook["elementos"])
+                flash(f"Importación lista: {count:,} productos y {total_units:,} unidades. Las ubicaciones informadas cubren {location_count} filas; lo demás queda pendiente de ubicar.".replace(",", "."), "success")
+                return redirect(url_for("import_data"))
             if not {"Contenedores", "Productos", "Stock"}.issubset(workbook.sheetnames):
-                raise ValueError("Faltan hojas. Usá la plantilla descargable: Contenedores, Productos y Stock.")
+                raise ValueError("No encontré la hoja elementos ni la plantilla con hojas Contenedores, Productos y Stock.")
             db = get_db()
             parsed = {}
             for sheet_name, required in {
@@ -450,9 +564,14 @@ def import_data():
                       ON CONFLICT(code) DO UPDATE SET name=excluded.name,location=excluded.location,site=excluded.site,active=1""",
                       (str(r["codigo"]).strip(),str(r["nombre"]).strip(),str(r.get("ubicacion") or "").strip(),site,now_text()))
                 for r in parsed["Productos"]:
-                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,created_at) VALUES(?,?,?,?,?,?,?)
-                      ON CONFLICT(sku) DO UPDATE SET name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,description=excluded.description""",
-                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),now_text()))
+                    pending = r.get("unidades_sin_ubicar") or 0
+                    if not isinstance(pending, (int,float)) or int(pending) != pending or pending < 0:
+                        raise ValueError("Las unidades sin ubicar deben ser números enteros iguales o mayores que cero.")
+                    db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,created_at)
+                      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
+                      name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
+                      description=excluded.description,source_location=excluded.source_location,active=1""",
+                      (str(r["sku"]).strip(),str(r["nombre"]).strip(),str(r.get("item") or "").strip(),str(r.get("color") or "").strip(),str(r.get("talle") or r.get("size") or "").strip(),str(r.get("descripcion") or "").strip(),int(pending),str(r.get("ubicaciones") or "").strip(),now_text()))
                 for r in parsed["Stock"]:
                     cid = db.execute("SELECT id FROM containers WHERE code=?", (str(r["codigo_contenedor"]).strip(),)).fetchone()[0]
                     pid = db.execute("SELECT id FROM products WHERE sku=?", (str(r["sku"]).strip(),)).fetchone()[0]
@@ -474,7 +593,7 @@ def import_template():
     wb = Workbook()
     sheets = {
         "Contenedores": ["codigo", "nombre", "ubicacion", "sucursal"],
-        "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion"],
+        "Productos": ["sku", "nombre", "item", "color", "talle", "descripcion", "unidades_sin_ubicar", "ubicaciones"],
         "Stock": ["codigo_contenedor", "sku", "cantidad"],
     }
     for index, (name, headers) in enumerate(sheets.items()):
@@ -497,13 +616,13 @@ def export_data():
     wb = Workbook()
     for index, (name, query) in enumerate([
         ("Contenedores", "SELECT code codigo,name nombre,location ubicacion,site sucursal FROM containers WHERE active=1 ORDER BY code"),
-        ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion FROM products ORDER BY sku"),
+        ("Productos", "SELECT sku,name nombre,item,color,size talle,description descripcion,legacy_units unidades_sin_ubicar,source_location ubicaciones FROM products ORDER BY sku"),
         ("Stock", "SELECT c.code codigo_contenedor,p.sku,s.quantity cantidad FROM stock s JOIN containers c ON c.id=s.container_id JOIN products p ON p.id=s.product_id WHERE s.quantity>0 ORDER BY c.code,p.sku"),
     ]):
         ws = wb.active if index == 0 else wb.create_sheet()
         ws.title = name
         rows = db.execute(query).fetchall()
-        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
+        ws.append(list(rows[0].keys()) if rows else {"Contenedores": ["codigo","nombre","ubicacion","sucursal"],"Productos":["sku","nombre","item","color","talle","descripcion","unidades_sin_ubicar","ubicaciones"],"Stock":["codigo_contenedor","sku","cantidad"]}[name])
         for row in rows:
             ws.append(list(row))
         ws.freeze_panes = "A2"
