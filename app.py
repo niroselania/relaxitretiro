@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS containers (
   id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
   location TEXT NOT NULL DEFAULT '', site TEXT NOT NULL DEFAULT 'Bariloche', active INTEGER NOT NULL DEFAULT 1,
+  parent_id INTEGER REFERENCES containers(id),
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS products (
@@ -83,6 +84,7 @@ def init_db():
     # Keep existing local databases usable when new product and site fields are added.
     for table, column, declaration in [
         ("containers", "site", "TEXT NOT NULL DEFAULT 'Bariloche'"),
+        ("containers", "parent_id", "INTEGER REFERENCES containers(id)"),
         ("products", "item", "TEXT NOT NULL DEFAULT ''"),
         ("products", "color", "TEXT NOT NULL DEFAULT ''"),
         ("products", "size", "TEXT NOT NULL DEFAULT ''"),
@@ -203,7 +205,7 @@ def dashboard():
         "movements": db.execute("SELECT COUNT(*) FROM movements WHERE date(created_at)=date('now','localtime')").fetchone()[0],
     }
     recent = db.execute("""SELECT m.*, p.sku, p.name product,
-      CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' ELSE 'Ingreso externo' END from_name,
+      CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' WHEN m.from_source='container' THEN 'Retiro manual' ELSE 'Ingreso externo' END from_name,
       t.name to_name
       FROM movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN containers f ON f.id=m.from_container_id
@@ -239,15 +241,22 @@ def create_container():
     name = request.form.get("name", "").strip()
     location = request.form.get("location", "").strip()
     site = request.form.get("site", "").strip()
+    parent_id = request.form.get("parent_id", type=int)
     if not name:
         flash("Ingresá un nombre para el contenedor.", "error")
         return redirect(url_for("containers"))
+    if parent_id:
+        parent = get_db().execute("SELECT * FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone()
+        if not parent:
+            flash("El contenedor principal ya no está disponible.", "error")
+            return redirect(url_for("containers"))
+        site = parent["site"]
     if site not in ("Bariloche", "Retiro"):
         flash("Elegí Bariloche o Retiro como depósito.", "error")
         return redirect(url_for("containers"))
     db = get_db()
     code = next_container_code(db)
-    db.execute("INSERT INTO containers(code,name,location,site,created_at) VALUES(?,?,?,?,?)", (code, name, location, site, now_text()))
+    db.execute("INSERT INTO containers(code,name,location,site,parent_id,created_at) VALUES(?,?,?,?,?,?)", (code, name, location, site, parent_id, now_text()))
     db.commit()
     flash(f"Contenedor creado. Código {code}.", "success")
     return redirect(url_for("container_detail", container_id=db.execute("SELECT id FROM containers WHERE code=?", (code,)).fetchone()[0]))
@@ -257,12 +266,58 @@ def create_container():
 @login_required
 def container_detail(container_id):
     db = get_db()
-    container = db.execute("SELECT * FROM containers WHERE id=?", (container_id,)).fetchone()
+    container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
     if not container:
         abort(404)
     products = db.execute("""SELECT p.*,s.quantity FROM stock s JOIN products p ON p.id=s.product_id
       WHERE s.container_id=? ORDER BY p.name COLLATE NOCASE""", (container_id,)).fetchall()
-    return render_template("container_detail.html", container=container, products=products)
+    children = db.execute("""SELECT c.*,COALESCE(SUM(s.quantity),0) units,COUNT(DISTINCT s.product_id) products_count
+      FROM containers c LEFT JOIN stock s ON s.container_id=c.id WHERE c.parent_id=? AND c.active=1
+      GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (container_id,)).fetchall()
+    parent = db.execute("SELECT id,name FROM containers WHERE id=?", (container["parent_id"],)).fetchone() if container["parent_id"] else None
+    return render_template("container_detail.html", container=container, products=products, children=children, parent=parent)
+
+
+@app.post("/contenedores/<int:container_id>/productos/<int:product_id>/quitar")
+@login_required
+def remove_container_product(container_id, product_id):
+    db = get_db()
+    row = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (container_id, product_id)).fetchone()
+    if not row:
+        flash("Ese producto ya no está en el contenedor.", "error")
+    else:
+        db.execute("DELETE FROM stock WHERE container_id=? AND product_id=?", (container_id, product_id))
+        db.execute("INSERT INTO movements(created_at,user_id,from_container_id,to_container_id,from_source,product_id,quantity,note) VALUES(?,?,?,NULL,'container',?,?,?)",
+                   (now_text(), session["user_id"], container_id, product_id, row["quantity"], "Retiro manual del contenedor"))
+        db.commit()
+        flash("Producto quitado del contenedor; la salida quedó registrada en movimientos.", "success")
+    return redirect(url_for("container_detail", container_id=container_id))
+
+
+@app.post("/contenedores/<int:container_id>/eliminar")
+@login_required
+def delete_container(container_id):
+    db = get_db()
+    container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
+    if not container:
+        abort(404)
+    subtree = [container_id]
+    for cid in subtree:
+        subtree.extend(r[0] for r in db.execute("SELECT id FROM containers WHERE parent_id=? AND active=1", (cid,)).fetchall())
+    placeholders = ",".join("?" for _ in subtree)
+    if request.form.get("confirm") != "yes":
+        abort(400)
+    # Deleting a hierarchy also removes its remaining stock, recorded as outgoing adjustments.
+    for cid in subtree:
+        stock_rows = db.execute("SELECT product_id,quantity FROM stock WHERE container_id=?", (cid,)).fetchall()
+        for row in stock_rows:
+            db.execute("INSERT INTO movements(created_at,user_id,from_container_id,to_container_id,from_source,product_id,quantity,note) VALUES(?,?,?,NULL,'container',?,?,?)",
+                       (now_text(), session["user_id"], cid, row["product_id"], row["quantity"], "Eliminación de contenedor"))
+    db.execute(f"DELETE FROM stock WHERE container_id IN ({placeholders})", subtree)
+    db.execute(f"UPDATE containers SET active=0 WHERE id IN ({placeholders})", subtree)
+    db.commit()
+    flash("Contenedor y sus subcontenedores eliminados; las cantidades se registraron como salidas.", "success")
+    return redirect(url_for("containers"))
 
 
 @app.route("/contenedores/<int:container_id>/etiqueta.svg")
@@ -468,7 +523,7 @@ def movements():
             except ValueError as exc:
                 flash(str(exc), "error")
     rows = db.execute("""SELECT m.*,p.sku,p.name product,
-      CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' ELSE 'Ingreso externo' END from_name,
+      CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' WHEN m.from_source='container' THEN 'Retiro manual' ELSE 'Ingreso externo' END from_name,
       t.name to_name
       FROM movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN containers f ON f.id=m.from_container_id LEFT JOIN containers t ON t.id=m.to_container_id

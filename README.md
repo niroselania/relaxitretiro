@@ -6,6 +6,8 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 
 - Inicio de sesión y cambio de contraseña desde **Cuenta**.
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
+- Jerarquía de contenedores: desde una ficha se pueden crear cajas/subcontenedores, cada uno con etiqueta y código propios.
+- Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
 - Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
 - El catálogo permite archivar referencias que no se tienen y restaurarlas si hace falta.
