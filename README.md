@@ -7,6 +7,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Inicio de sesión y cambio de contraseña desde **Cuenta**.
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
 - Jerarquía de contenedores: desde una ficha se pueden crear cajas/subcontenedores, cada uno con etiqueta y código propios.
+- Edición de nombre y ubicación, cambio de depósito para un contenedor principal y movimiento de contenedores dentro de otros; el cambio de depósito se propaga a las cajas hijas.
 - Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
 - Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
@@ -14,6 +15,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Stock por contenedor, consulta y búsqueda por ubicación.
 - Lector de código por teclado USB (los lectores configurados como teclado suelen enviar el código y Enter).
 - Ingresos, salidas y traslados, con control de cantidad disponible y registro de movimientos.
+- Flujo PICK para traslados por lote: escaneá el código del contenedor de origen y destino, luego las etiquetas de varias prendas; cada lectura suma una unidad y el lote se aplica al confirmar.
 - Importación y exportación de contenedores, productos y stock en Excel.
 
 El importador admite la planilla original de productos con una hoja `elementos` y la plantilla de tres hojas. La planilla original trae cantidades, pero no identifica ubicación. Esas cantidades se guardan como stock importado sin ubicar y se trasladan a un contenedor desde **Movimientos** usando `Planilla importada sin ubicación` como origen. Así se conserva el total y queda disponible por Bariloche o Retiro después de asignarlo. La importación no carga el historial anterior de movimientos. La importación hace altas/actualizaciones de los códigos incluidos y conserva los códigos existentes; las filas que no aparezcan en un nuevo archivo no se eliminan automáticamente.

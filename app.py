@@ -1,5 +1,6 @@
 import hmac
 import io
+import json
 import os
 import secrets
 import sqlite3
@@ -275,7 +276,49 @@ def container_detail(container_id):
       FROM containers c LEFT JOIN stock s ON s.container_id=c.id WHERE c.parent_id=? AND c.active=1
       GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (container_id,)).fetchall()
     parent = db.execute("SELECT id,name FROM containers WHERE id=?", (container["parent_id"],)).fetchone() if container["parent_id"] else None
-    return render_template("container_detail.html", container=container, products=products, children=children, parent=parent)
+    subtree = [container_id]
+    for cid in subtree:
+        subtree.extend(r[0] for r in db.execute("SELECT id FROM containers WHERE parent_id=? AND active=1", (cid,)).fetchall())
+    excluded = ",".join("?" for _ in subtree)
+    move_targets = db.execute(f"SELECT id,name,code,site FROM containers WHERE active=1 AND id NOT IN ({excluded}) ORDER BY name COLLATE NOCASE", subtree).fetchall()
+    return render_template("container_detail.html", container=container, products=products, children=children,
+                           parent=parent, move_targets=move_targets)
+
+
+@app.post("/contenedores/<int:container_id>/editar")
+@login_required
+def edit_container(container_id):
+    db = get_db()
+    container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
+    if not container:
+        abort(404)
+    name = request.form.get("name", "").strip()
+    location = request.form.get("location", "").strip()
+    parent_value = request.form.get("parent_id", "")
+    parent_id = int(parent_value) if parent_value.isdigit() else None
+    subtree = [container_id]
+    for cid in subtree:
+        subtree.extend(r[0] for r in db.execute("SELECT id FROM containers WHERE parent_id=? AND active=1", (cid,)).fetchall())
+    if not name:
+        flash("El nombre del contenedor no puede quedar vacío.", "error")
+    elif parent_id in subtree:
+        flash("No podés mover un contenedor dentro de sí mismo o de una de sus cajas.", "error")
+    else:
+        parent = db.execute("SELECT id,site FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone() if parent_id else None
+        if parent_id and not parent:
+            flash("El contenedor de destino no está disponible.", "error")
+        else:
+            site = parent["site"] if parent else request.form.get("site", "")
+            if site not in ("Bariloche", "Retiro"):
+                flash("Elegí Bariloche o Retiro como depósito.", "error")
+            else:
+                placeholders = ",".join("?" for _ in subtree)
+                with db:
+                    db.execute("UPDATE containers SET name=?,location=?,parent_id=?,site=? WHERE id=?", (name,location,parent_id,site,container_id))
+                    db.execute(f"UPDATE containers SET site=? WHERE id IN ({placeholders})", [site,*subtree])
+                flash("Contenedor actualizado.", "success")
+                return redirect(url_for("container_detail", container_id=container_id))
+    return redirect(url_for("container_detail", container_id=container_id) + "#editar")
 
 
 @app.post("/contenedores/<int:container_id>/productos/<int:product_id>/quitar")
@@ -481,56 +524,73 @@ def scan():
 def movements():
     db = get_db()
     if request.method == "POST":
-        product_id = request.form.get("product_id", type=int)
-        from_value = request.form.get("from_id", "")
-        legacy_source = from_value == "legacy"
-        from_id = None if legacy_source else (request.form.get("from_id", type=int) or None)
-        to_id = request.form.get("to_id", type=int) or None
-        quantity = request.form.get("quantity", type=int)
-        note = request.form.get("note", "").strip()
-        product = db.execute("SELECT id,legacy_units FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
-        if not product or not quantity or quantity < 1 or (from_id is None and not legacy_source and to_id is None):
-            flash("Revisá producto, cantidad, origen y destino.", "error")
-        elif legacy_source and (not to_id or product["legacy_units"] < quantity):
-            flash("La cantidad supera las unidades importadas pendientes o falta elegir el contenedor de destino.", "error")
-        elif from_id and from_id == to_id:
-            flash("El origen y el destino deben ser distintos.", "error")
-        elif from_id and not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (from_id,)).fetchone():
-            flash("El contenedor de origen no existe o está inactivo.", "error")
-        elif to_id and not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (to_id,)).fetchone():
-            flash("El contenedor de destino no existe o está inactivo.", "error")
-        else:
+        if request.form.get("mode") == "pick_batch":
+            from_value = request.form.get("from_id", "")
+            legacy_source = from_value == "legacy"
+            from_id = None if legacy_source else (int(from_value) if from_value.isdigit() else None)
+            to_id = request.form.get("to_id", type=int) or None
+            note = request.form.get("note", "").strip()
             try:
+                scanned_items = json.loads(request.form.get("items", "[]"))
+                quantities = {}
+                for item in scanned_items:
+                    pid, qty = int(item["product_id"]), int(item["quantity"])
+                    if qty < 1:
+                        raise ValueError("La cantidad escaneada no es válida.")
+                    quantities[pid] = quantities.get(pid, 0) + qty
+                if not quantities:
+                    raise ValueError("Escaneá al menos una prenda antes de mover.")
+                if not from_id and not legacy_source:
+                    raise ValueError("Escaneá o seleccioná un contenedor de origen.")
+                if not to_id:
+                    raise ValueError("Escaneá o seleccioná un contenedor de destino.")
+                if from_id == to_id:
+                    raise ValueError("El origen y el destino deben ser distintos.")
+                if from_id and not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (from_id,)).fetchone():
+                    raise ValueError("El contenedor de origen ya no está disponible.")
+                if not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (to_id,)).fetchone():
+                    raise ValueError("El contenedor de destino ya no está disponible.")
                 with db:
-                    if legacy_source:
-                        db.execute("UPDATE products SET legacy_units=legacy_units-? WHERE id=?", (quantity,product_id))
-                    elif from_id:
-                        row = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (from_id, product_id)).fetchone()
-                        if not row or row["quantity"] < quantity:
-                            raise ValueError("No hay esa cantidad disponible en el origen.")
-                        remaining = row["quantity"] - quantity
-                        if remaining:
-                            db.execute("UPDATE stock SET quantity=? WHERE container_id=? AND product_id=?", (remaining, from_id, product_id))
+                    for pid, quantity in quantities.items():
+                        product = db.execute("SELECT id,legacy_units,name FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+                        if not product:
+                            raise ValueError("Uno de los productos escaneados no existe o está archivado.")
+                        if legacy_source:
+                            if product["legacy_units"] < quantity:
+                                raise ValueError(f"No hay {quantity} unidades pendientes de {product['name']} en la planilla.")
+                            db.execute("UPDATE products SET legacy_units=legacy_units-? WHERE id=?", (quantity, pid))
+                            source_label = "legacy"
                         else:
-                            db.execute("DELETE FROM stock WHERE container_id=? AND product_id=?", (from_id, product_id))
-                    if to_id:
-                        db.execute("""INSERT INTO stock(container_id,product_id,quantity) VALUES(?,?,?)
-                          ON CONFLICT(container_id,product_id) DO UPDATE SET quantity=quantity+excluded.quantity""", (to_id, product_id, quantity))
-                    db.execute("""INSERT INTO movements(created_at,user_id,from_container_id,to_container_id,from_source,product_id,quantity,note)
-                      VALUES(?,?,?,?,?,?,?,?)""", (now_text(),session["user_id"],from_id,to_id,"legacy" if legacy_source else "external",product_id,quantity,note))
-                flash("Movimiento registrado.", "success")
+                            available = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (from_id, pid)).fetchone()
+                            if not available or available["quantity"] < quantity:
+                                raise ValueError(f"No hay {quantity} unidades de {product['name']} en el contenedor de origen.")
+                            remaining = available["quantity"] - quantity
+                            if remaining:
+                                db.execute("UPDATE stock SET quantity=? WHERE container_id=? AND product_id=?", (remaining, from_id, pid))
+                            else:
+                                db.execute("DELETE FROM stock WHERE container_id=? AND product_id=?", (from_id, pid))
+                            source_label = "external"
+                        db.execute("INSERT INTO stock(container_id,product_id,quantity) VALUES(?,?,?) ON CONFLICT(container_id,product_id) DO UPDATE SET quantity=quantity+excluded.quantity", (to_id, pid, quantity))
+                        db.execute("INSERT INTO movements(created_at,user_id,from_container_id,to_container_id,from_source,product_id,quantity,note) VALUES(?,?,?,?,?,?,?,?)",
+                                   (now_text(), session["user_id"], from_id, to_id, source_label, pid, quantity, note))
+                flash(f"Traslado completado: {sum(quantities.values())} unidades de {len(quantities)} productos.", "success")
                 return redirect(url_for("movements"))
-            except ValueError as exc:
-                flash(str(exc), "error")
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                flash(str(exc) or "No se pudo completar el movimiento.", "error")
+        else:
+            flash("Usá el flujo de PICK para registrar movimientos por lote.", "error")
     rows = db.execute("""SELECT m.*,p.sku,p.name product,
       CASE WHEN f.name IS NOT NULL THEN f.name WHEN m.from_source='legacy' THEN 'Planilla sin ubicación' WHEN m.from_source='container' THEN 'Retiro manual' ELSE 'Ingreso externo' END from_name,
       t.name to_name
       FROM movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN containers f ON f.id=m.from_container_id LEFT JOIN containers t ON t.id=m.to_container_id
       ORDER BY m.id DESC LIMIT 100""").fetchall()
-    return render_template("movements.html", rows=rows,
-      products=db.execute("SELECT * FROM products WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall(),
-      containers=db.execute("SELECT * FROM containers WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall())
+    products = db.execute("SELECT * FROM products WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
+    containers = db.execute("SELECT * FROM containers WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
+    product_index = {p["sku"]: {"id": p["id"], "name": p["name"], "sku": p["sku"]} for p in products}
+    container_index = {c["code"]: {"id": c["id"], "name": c["name"], "code": c["code"]} for c in containers}
+    return render_template("movements.html", rows=rows, products=products, containers=containers,
+                           product_index=product_index, container_index=container_index)
 
 
 def import_elementos_sheet(db, sheet):
