@@ -233,7 +233,8 @@ def containers():
       FROM containers c LEFT JOIN stock s ON s.container_id=c.id
       WHERE c.active=1 AND (?='' OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
       GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (q, f"%{q}%", f"%{q}%", f"%{q}%")).fetchall()
-    return render_template("containers.html", containers=rows, q=q)
+    parents = get_db().execute("SELECT id,name,code,site FROM containers WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
+    return render_template("containers.html", containers=rows, q=q, parent_options=parents)
 
 
 @app.post("/contenedores/nuevo")
@@ -261,6 +262,58 @@ def create_container():
     db.commit()
     flash(f"Contenedor creado. Código {code}.", "success")
     return redirect(url_for("container_detail", container_id=db.execute("SELECT id FROM containers WHERE code=?", (code,)).fetchone()[0]))
+
+
+@app.post("/contenedores/crear-lote")
+@login_required
+def create_container_batch():
+    prefix = request.form.get("prefix", "").strip()
+    location = request.form.get("location", "").strip()
+    site = request.form.get("site", "").strip()
+    parent_value = request.form.get("parent_id", "")
+    parent_id = int(parent_value) if parent_value.isdigit() else None
+    try:
+        start_text = request.form.get("start", "").strip()
+        end_text = request.form.get("end", "").strip()
+        start, end = int(start_text), int(end_text)
+    except ValueError:
+        flash("Ingresá números válidos para el inicio y el fin del rango.", "error")
+        return redirect(url_for("containers"))
+    if not prefix or start < 0 or end < start:
+        flash("Revisá el prefijo y el rango: el inicio debe ser menor o igual al final.", "error")
+        return redirect(url_for("containers"))
+    if end - start + 1 > 500:
+        flash("Podés crear hasta 500 contenedores por tanda.", "error")
+        return redirect(url_for("containers"))
+    db = get_db()
+    if parent_id:
+        parent = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone()
+        if not parent:
+            flash("El contenedor principal ya no está disponible.", "error")
+            return redirect(url_for("containers"))
+        site = parent["site"]
+    if site not in ("Bariloche", "Retiro"):
+        flash("Elegí Bariloche o Retiro como depósito.", "error")
+        return redirect(url_for("containers"))
+    width = max(len(start_text), len(end_text))
+    names = [f"{prefix} {number:0{width}d}" for number in range(start, end + 1)]
+    placeholders = ",".join("?" for _ in names)
+    existing = db.execute(f"SELECT name FROM containers WHERE active=1 AND name IN ({placeholders})", names).fetchall()
+    if existing:
+        duplicates = ", ".join(row["name"] for row in existing[:5])
+        flash(f"No se creó el lote porque ya existen nombres como: {duplicates}.", "error")
+        return redirect(url_for("containers"))
+    try:
+        with db:
+            for name in names:
+                code = next_container_code(db)
+                db.execute("INSERT INTO containers(code,name,location,site,parent_id,created_at) VALUES(?,?,?,?,?,?)",
+                           (code, name, location, site, parent_id, now_text()))
+    except sqlite3.IntegrityError:
+        flash("No se pudo crear el lote completo. Revisá si algún código o nombre ya está registrado.", "error")
+        return redirect(url_for("containers"))
+    flash(f"Se crearon {len(names)} contenedores, desde {names[0]} hasta {names[-1]}, con códigos de barras únicos.", "success")
+    return redirect(url_for("containers", q=prefix))
 
 
 @app.route("/contenedores/<int:container_id>")

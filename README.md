@@ -6,6 +6,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 
 - Inicio de sesión y cambio de contraseña desde **Cuenta**.
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
+- Creación por lote de hasta 500 contenedores con prefijo y rango numérico, cada uno con código de barras propio.
 - Jerarquía de contenedores: desde una ficha se pueden crear cajas/subcontenedores, cada uno con etiqueta y código propios.
 - Edición de nombre y ubicación, cambio de depósito para un contenedor principal y movimiento de contenedores dentro de otros; el cambio de depósito se propaga a las cajas hijas.
 - Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
