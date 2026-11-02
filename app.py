@@ -685,9 +685,9 @@ def movements():
 
 def import_elementos_sheet(db, sheet):
     headers = [str(cell or "").strip().lower() for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
-    required = ["codigo", "nombre", "item", "color", "talle", "descripcion", "unidades", "ubicaciones"]
+    required = ["codigo", "nombre", "item", "color", "talle", "descripcion", "unidades"]
     if not set(required).issubset(headers):
-        raise ValueError("La hoja elementos debe incluir codigo, nombre, item, color, talle, descripcion, unidades y ubicaciones.")
+        raise ValueError("La hoja elementos debe incluir codigo, nombre, item, color, talle, descripcion y unidades.")
     rows = [dict(zip(headers, row)) for row in sheet.iter_rows(min_row=2, values_only=True) if any(v is not None for v in row)]
     seen = set()
     total_units = 0
@@ -700,24 +700,32 @@ def import_elementos_sheet(db, sheet):
         if code in seen:
             raise ValueError(f"El código {code} está repetido en la planilla.")
         seen.add(code)
+        # The original export's "unidades" is not treated as a physical inventory count.
         raw_units = row.get("unidades")
         try:
             units = int(raw_units or 0)
             if units < 0 or (raw_units is not None and float(raw_units) != units):
                 raise ValueError
         except (TypeError, ValueError):
-            raise ValueError(f"La cantidad de unidades no es un entero válido en la fila {row_number}.")
+            raise ValueError(f"La cantidad de unidades no es válida en la fila {row_number}.")
         total_units += units
         cleaned.append((code,name,str(row.get("item") or "").strip(),str(row.get("color") or "").strip(),
           str(row.get("talle") or "").strip(),str(row.get("descripcion") or "").strip(),units,
           str(row.get("ubicaciones") or "").strip()))
     with db:
+        virtual = db.execute("SELECT id FROM containers WHERE is_virtual=1 AND active=1 LIMIT 1").fetchone()
+        if not virtual:
+            raise ValueError("No se encontró el Depósito Virtual. Reiniciá el servicio para actualizarlo.")
         for item in cleaned:
             db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,created_at)
               VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
               name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
-              description=excluded.description,source_location=excluded.source_location,active=1""",
-              (*item,now_text()))
+              description=excluded.description,source_location=excluded.source_location,legacy_units=0,active=1""",
+              (item[0],item[1],item[2],item[3],item[4],item[5],0,item[7],now_text()))
+            product_id = db.execute("SELECT id FROM products WHERE sku=?", (item[0],)).fetchone()[0]
+            # Zero quantity records membership in the virtual source without claiming real stock.
+            db.execute("INSERT INTO stock(container_id,product_id,quantity) VALUES(?,?,0) ON CONFLICT(container_id,product_id) DO NOTHING",
+                       (virtual["id"], product_id))
     location_count = sum(bool(item[7]) for item in cleaned)
     return len(cleaned), total_units, location_count
 
@@ -735,7 +743,7 @@ def import_data():
             if "elementos" in workbook.sheetnames:
                 db = get_db()
                 count, total_units, location_count = import_elementos_sheet(db, workbook["elementos"])
-                flash(f"Importación lista: {count:,} productos y {total_units:,} unidades. Las ubicaciones informadas cubren {location_count} filas; lo demás queda pendiente de ubicar.".replace(",", "."), "success")
+                flash(f"Importación lista: {count:,} productos cargados en DEPOSITO VIRTUAL para PICK. Las cantidades de la columna unidades ({total_units:,}) no se tomaron como stock real.".replace(",", "."), "success")
                 return redirect(url_for("import_data"))
             if not {"Contenedores", "Productos", "Stock"}.issubset(workbook.sheetnames):
                 raise ValueError("No encontré la hoja elementos ni la plantilla con hojas Contenedores, Productos y Stock.")
