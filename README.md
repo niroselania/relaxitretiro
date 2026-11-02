@@ -18,6 +18,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Lector de código por teclado USB (los lectores configurados como teclado suelen enviar el código y Enter).
 - Ingresos, salidas y traslados, con control de cantidad disponible y registro de movimientos.
 - Flujo PICK para traslados por lote: escaneá el código del contenedor de origen y destino, luego las etiquetas de varias prendas; cada lectura suma una unidad y el lote se aplica al confirmar.
+- Depósito Virtual aislado, creado automáticamente: sirve como origen PICK sin saldo inicial ni control de cantidad; solo el rack físico de destino suma stock.
 - Importación y exportación de contenedores, productos y stock en Excel.
 
 El importador admite la planilla original de productos con una hoja `elementos` y la plantilla de tres hojas. La planilla original trae cantidades, pero no identifica ubicación. Esas cantidades se guardan como stock importado sin ubicar y se trasladan a un contenedor desde **Movimientos** usando `Planilla importada sin ubicación` como origen. Así se conserva el total y queda disponible por Bariloche o Retiro después de asignarlo. La importación no carga el historial anterior de movimientos. La importación hace altas/actualizaciones de los códigos incluidos y conserva los códigos existentes; las filas que no aparezcan en un nuevo archivo no se eliminan automáticamente.

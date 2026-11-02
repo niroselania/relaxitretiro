@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS containers (
   id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
   location TEXT NOT NULL DEFAULT '', site TEXT NOT NULL DEFAULT 'Bariloche', active INTEGER NOT NULL DEFAULT 1,
   parent_id INTEGER REFERENCES containers(id),
+  is_virtual INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS products (
@@ -86,6 +87,7 @@ def init_db():
     for table, column, declaration in [
         ("containers", "site", "TEXT NOT NULL DEFAULT 'Bariloche'"),
         ("containers", "parent_id", "INTEGER REFERENCES containers(id)"),
+        ("containers", "is_virtual", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "item", "TEXT NOT NULL DEFAULT ''"),
         ("products", "color", "TEXT NOT NULL DEFAULT ''"),
         ("products", "size", "TEXT NOT NULL DEFAULT ''"),
@@ -104,6 +106,14 @@ def init_db():
     if not db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         db.execute("INSERT INTO users(username, password_hash) VALUES (?, ?)",
                    (username, generate_password_hash(password)))
+    if not db.execute("SELECT 1 FROM containers WHERE is_virtual=1 AND active=1").fetchone():
+        last = db.execute("SELECT MAX(CAST(code AS INTEGER)) FROM containers WHERE code GLOB '[0-9]*' AND length(code)=12").fetchone()[0]
+        candidate = (int(last) + 1) if last else 1
+        while db.execute("SELECT 1 FROM containers WHERE code=?", (f"{candidate:012d}",)).fetchone():
+            candidate += 1
+        code = f"{candidate:012d}"
+        db.execute("INSERT INTO containers(code,name,location,site,active,parent_id,is_virtual,created_at) VALUES(?,?,?,?,1,NULL,1,?)",
+                   (code, "DEPOSITO VIRTUAL", "Stock lógico sin inventario físico", "Retiro", now_text()))
     db.commit()
 
 
@@ -200,7 +210,7 @@ def account():
 def dashboard():
     db = get_db()
     stats = {
-        "containers": db.execute("SELECT COUNT(*) FROM containers WHERE active=1").fetchone()[0],
+        "containers": db.execute("SELECT COUNT(*) FROM containers WHERE active=1 AND is_virtual=0").fetchone()[0],
         "products": db.execute("SELECT COUNT(*) FROM products").fetchone()[0],
         "units": db.execute("SELECT COALESCE(SUM(quantity),0) FROM stock").fetchone()[0],
         "movements": db.execute("SELECT COUNT(*) FROM movements WHERE date(created_at)=date('now','localtime')").fetchone()[0],
@@ -231,10 +241,11 @@ def containers():
     rows = get_db().execute("""SELECT c.*, COALESCE(SUM(s.quantity),0) units,
       COUNT(DISTINCT s.product_id) products_count
       FROM containers c LEFT JOIN stock s ON s.container_id=c.id
-      WHERE c.active=1 AND (?='' OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
+      WHERE c.active=1 AND c.is_virtual=0 AND (?='' OR c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ?)
       GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (q, f"%{q}%", f"%{q}%", f"%{q}%")).fetchall()
-    parents = get_db().execute("SELECT id,name,code,site FROM containers WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
-    return render_template("containers.html", containers=rows, q=q, parent_options=parents)
+    parents = get_db().execute("SELECT id,name,code,site FROM containers WHERE active=1 AND is_virtual=0 ORDER BY name COLLATE NOCASE").fetchall()
+    virtual = get_db().execute("SELECT * FROM containers WHERE active=1 AND is_virtual=1 LIMIT 1").fetchone()
+    return render_template("containers.html", containers=rows, q=q, parent_options=parents, virtual=virtual)
 
 
 @app.post("/contenedores/nuevo")
@@ -251,6 +262,9 @@ def create_container():
         parent = get_db().execute("SELECT * FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone()
         if not parent:
             flash("El contenedor principal ya no está disponible.", "error")
+            return redirect(url_for("containers"))
+        if parent["is_virtual"]:
+            flash("El Depósito Virtual es aislado y no puede tener subcontenedores.", "error")
             return redirect(url_for("containers"))
         site = parent["site"]
     if site not in ("Bariloche", "Retiro"):
@@ -290,6 +304,9 @@ def create_container_batch():
         parent = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone()
         if not parent:
             flash("El contenedor principal ya no está disponible.", "error")
+            return redirect(url_for("containers"))
+        if parent["is_virtual"]:
+            flash("El Depósito Virtual es aislado y no puede tener subcontenedores.", "error")
             return redirect(url_for("containers"))
         site = parent["site"]
     if site not in ("Bariloche", "Retiro"):
@@ -333,7 +350,7 @@ def container_detail(container_id):
     for cid in subtree:
         subtree.extend(r[0] for r in db.execute("SELECT id FROM containers WHERE parent_id=? AND active=1", (cid,)).fetchall())
     excluded = ",".join("?" for _ in subtree)
-    move_targets = db.execute(f"SELECT id,name,code,site FROM containers WHERE active=1 AND id NOT IN ({excluded}) ORDER BY name COLLATE NOCASE", subtree).fetchall()
+    move_targets = db.execute(f"SELECT id,name,code,site FROM containers WHERE active=1 AND is_virtual=0 AND id NOT IN ({excluded}) ORDER BY name COLLATE NOCASE", subtree).fetchall()
     return render_template("container_detail.html", container=container, products=products, children=children,
                            parent=parent, move_targets=move_targets)
 
@@ -345,6 +362,9 @@ def edit_container(container_id):
     container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
     if not container:
         abort(404)
+    if container["is_virtual"]:
+        flash("El Depósito Virtual no se puede editar ni mover.", "error")
+        return redirect(url_for("container_detail", container_id=container_id))
     name = request.form.get("name", "").strip()
     location = request.form.get("location", "").strip()
     parent_value = request.form.get("parent_id", "")
@@ -360,6 +380,8 @@ def edit_container(container_id):
         parent = db.execute("SELECT id,site FROM containers WHERE id=? AND active=1", (parent_id,)).fetchone() if parent_id else None
         if parent_id and not parent:
             flash("El contenedor de destino no está disponible.", "error")
+        elif parent and parent["is_virtual"]:
+            flash("El Depósito Virtual es aislado y no puede contener otros contenedores.", "error")
         else:
             site = parent["site"] if parent else request.form.get("site", "")
             if site not in ("Bariloche", "Retiro"):
@@ -397,6 +419,9 @@ def delete_container(container_id):
     container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
     if not container:
         abort(404)
+    if container["is_virtual"]:
+        flash("El Depósito Virtual protegido no se puede eliminar.", "error")
+        return redirect(url_for("containers"))
     subtree = [container_id]
     for cid in subtree:
         subtree.extend(r[0] for r in db.execute("SELECT id FROM containers WHERE parent_id=? AND active=1", (cid,)).fetchall())
@@ -599,10 +624,14 @@ def movements():
                     raise ValueError("Escaneá o seleccioná un contenedor de destino.")
                 if from_id == to_id:
                     raise ValueError("El origen y el destino deben ser distintos.")
-                if from_id and not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (from_id,)).fetchone():
+                source_container = db.execute("SELECT id,is_virtual FROM containers WHERE id=? AND active=1", (from_id,)).fetchone() if from_id else None
+                if from_id and not source_container:
                     raise ValueError("El contenedor de origen ya no está disponible.")
-                if not db.execute("SELECT id FROM containers WHERE id=? AND active=1", (to_id,)).fetchone():
+                destination_container = db.execute("SELECT id,is_virtual FROM containers WHERE id=? AND active=1", (to_id,)).fetchone()
+                if not destination_container:
                     raise ValueError("El contenedor de destino ya no está disponible.")
+                if destination_container["is_virtual"]:
+                    raise ValueError("El Depósito Virtual solo se puede usar como origen PICK.")
                 with db:
                     for pid, quantity in quantities.items():
                         product = db.execute("SELECT id,legacy_units,name FROM products WHERE id=? AND active=1", (pid,)).fetchone()
@@ -613,6 +642,9 @@ def movements():
                                 raise ValueError(f"No hay {quantity} unidades pendientes de {product['name']} en la planilla.")
                             db.execute("UPDATE products SET legacy_units=legacy_units-? WHERE id=?", (quantity, pid))
                             source_label = "legacy"
+                        elif source_container and source_container["is_virtual"]:
+                            # Virtual source intentionally has no physical balance to decrement.
+                            source_label = "virtual"
                         else:
                             available = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (from_id, pid)).fetchone()
                             if not available or available["quantity"] < quantity:
@@ -639,11 +671,16 @@ def movements():
       LEFT JOIN containers f ON f.id=m.from_container_id LEFT JOIN containers t ON t.id=m.to_container_id
       ORDER BY m.id DESC LIMIT 100""").fetchall()
     products = db.execute("SELECT * FROM products WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
-    containers = db.execute("SELECT * FROM containers WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
+    containers = db.execute("SELECT * FROM containers WHERE active=1 AND is_virtual=0 ORDER BY name COLLATE NOCASE").fetchall()
+    virtual_container = db.execute("SELECT * FROM containers WHERE active=1 AND is_virtual=1 LIMIT 1").fetchone()
     product_index = {p["sku"]: {"id": p["id"], "name": p["name"], "sku": p["sku"]} for p in products}
-    container_index = {c["code"]: {"id": c["id"], "name": c["name"], "code": c["code"]} for c in containers}
+    source_index = {c["code"]: {"id": c["id"], "name": c["name"], "code": c["code"]} for c in containers}
+    destination_index = dict(source_index)
+    if virtual_container:
+        source_index[virtual_container["code"]] = {"id": virtual_container["id"], "name": virtual_container["name"], "code": virtual_container["code"]}
     return render_template("movements.html", rows=rows, products=products, containers=containers,
-                           product_index=product_index, container_index=container_index)
+                           product_index=product_index, source_index=source_index,
+                           destination_index=destination_index, virtual_container=virtual_container)
 
 
 def import_elementos_sheet(db, sheet):
