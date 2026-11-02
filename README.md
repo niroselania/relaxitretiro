@@ -7,6 +7,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Inicio de sesión y cambio de contraseña desde **Cuenta**.
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
 - Creación por lote de hasta 500 contenedores con prefijo y rango numérico, cada uno con código de barras propio.
+- Desde la ficha del contenedor principal se pueden crear los racks por lote como sus subcontenedores.
 - Jerarquía de contenedores: desde una ficha se pueden crear cajas/subcontenedores, cada uno con etiqueta y código propios.
 - Edición de nombre y ubicación, cambio de depósito para un contenedor principal y movimiento de contenedores dentro de otros; el cambio de depósito se propaga a las cajas hijas.
 - Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
@@ -40,14 +41,14 @@ En Portainer, creá un Stack y pegá el contenido de `compose-portainer.yaml`. E
 - `SECRET_KEY`: valor aleatorio largo usado para firmar sesiones.
 - `ADMIN_USERNAME`: usuario inicial (por defecto `admin`).
 - `ADMIN_PASSWORD`: contraseña inicial larga.
-- `PORT`: puerto HTTP publicado (por defecto `8000`).
+- `PORT`: puerto HTTP publicado (por defecto `8001`).
 - `SESSION_COOKIE_SECURE`: dejalo `false` si entrás por HTTP directo. Ponelo en `true` cuando el sitio quede detrás de HTTPS.
 
 Portainer crea el volumen `deposito_data`; ahí persiste la base SQLite aunque se reemplace el contenedor. No borres ese volumen al actualizar.
 
 ### 3. Primer ingreso
 
-Abrí `http://IP-DEL-SERVIDOR:8000` (o el puerto definido), iniciá sesión con el usuario y contraseña configurados en el Stack y cambiá la contraseña en **Cuenta**. Para exponerlo fuera de la red local, configurá HTTPS en el proxy inverso antes de usar `SESSION_COOKIE_SECURE=true`.
+Abrí `http://IP-DEL-SERVIDOR:8001` (o el puerto definido), iniciá sesión con el usuario y contraseña configurados en el Stack y cambiá la contraseña en **Cuenta**. Para exponerlo fuera de la red local, configurá HTTPS en el proxy inverso antes de usar `SESSION_COOKIE_SECURE=true`.
 
 ## Alternativa con Compose
 
