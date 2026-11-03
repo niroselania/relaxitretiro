@@ -245,7 +245,11 @@ def containers():
       GROUP BY c.id ORDER BY c.name COLLATE NOCASE""", (q, f"%{q}%", f"%{q}%", f"%{q}%")).fetchall()
     parents = get_db().execute("SELECT id,name,code,site FROM containers WHERE active=1 AND is_virtual=0 ORDER BY name COLLATE NOCASE").fetchall()
     virtual = get_db().execute("SELECT * FROM containers WHERE active=1 AND is_virtual=1 LIMIT 1").fetchone()
-    return render_template("containers.html", containers=rows, q=q, parent_options=parents, virtual=virtual)
+    virtual_product_count = 0
+    if virtual:
+        virtual_product_count = get_db().execute("SELECT COUNT(DISTINCT product_id) FROM stock WHERE container_id=?", (virtual["id"],)).fetchone()[0]
+    return render_template("containers.html", containers=rows, q=q, parent_options=parents,
+                           virtual=virtual, virtual_product_count=virtual_product_count)
 
 
 @app.post("/contenedores/nuevo")
