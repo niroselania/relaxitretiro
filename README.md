@@ -57,7 +57,7 @@ Portainer crea el volumen `deposito_data`; ahí persiste la base SQLite aunque s
 2. En las variables del Stack de Portainer, cargá `TELEGRAM_BOT_TOKEN` y dejá por ahora vacío `TELEGRAM_ALLOWED_USER_IDS`. Redesplegá el Stack.
 3. Abrí un chat privado con el bot, tocá **Start** y enviá `/id`. El bot devuelve tu user ID, pero todavía no consulta el inventario.
 4. En Portainer, agregá ese número a `TELEGRAM_ALLOWED_USER_IDS` y redesplegá.
-5. En el chat privado, enviá el código de artículo (`item`) y color, por ejemplo `84628 BLK`, o `/buscar 84628 BLK`. También acepta el código de barras completo; ese devuelve la variante asociada.
+5. En el chat privado, enviá el código de artículo (`item`) y color, por ejemplo `84628 BLK`, o `/buscar 84628 BLK` para listar todos los talles. Para una prenda puntual, enviá su SKU/código de barras solo, sin color.
 
 El bot usa long polling, comparte la base SQLite del Stack y requiere salida a Internet desde el contenedor. No publiques el token ni lo agregues a GitHub. El bot usa `getUpdates`; si ese bot ya tiene un webhook configurado, eliminá el webhook antes de iniciar este servicio, porque Telegram no permite usar ambos métodos a la vez.
 

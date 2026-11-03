@@ -27,11 +27,17 @@ def api(method, data):
         with urlopen(request, timeout=45) as response:
             result = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
-        raise RuntimeError(f"Telegram API returned HTTP {exc.code}") from None
+        try:
+            description = json.loads(exc.read().decode("utf-8")).get("description", "")
+        except Exception:
+            description = ""
+        detail = f": {description[:180]}" if description else ""
+        raise RuntimeError(f"Telegram API HTTP {exc.code}{detail}") from None
     except (URLError, TimeoutError) as exc:
         raise RuntimeError(f"Telegram connection error: {type(exc).__name__}") from None
     if not result.get("ok"):
-        raise RuntimeError("Telegram API rejected the request")
+        description = str(result.get("description", ""))[:180]
+        raise RuntimeError(f"Telegram API rejected the request: {description}")
     return result.get("result")
 
 
@@ -39,10 +45,10 @@ def send(chat_id, text):
     api("sendMessage", {"chat_id": chat_id, "text": text})
 
 
-def search(code, color):
+def search(code, color=None):
     with sqlite3.connect(DATABASE_PATH, timeout=20) as db:
         db.row_factory = sqlite3.Row
-        return db.execute("""SELECT p.sku,p.name,p.item,p.color,p.size,
+        sql = """SELECT p.sku,p.name,p.item,p.color,p.size,
           COALESCE(SUM(CASE WHEN c.is_virtual=0 AND c.active=1 THEN s.quantity ELSE 0 END),0) physical_units,
           GROUP_CONCAT(CASE
             WHEN c.is_virtual=1 AND c.active=1 THEN 'DEPOSITO VIRTUAL · listo para PICK'
@@ -51,12 +57,19 @@ def search(code, color):
           FROM products p
           LEFT JOIN stock s ON s.product_id=p.id
           LEFT JOIN containers c ON c.id=s.container_id
-          WHERE p.active=1 AND (TRIM(p.item)=? OR p.sku=?) AND UPPER(TRIM(p.color))=UPPER(?)
+          WHERE p.active=1 AND {condition}
           GROUP BY p.id
           ORDER BY CASE UPPER(TRIM(p.size))
             WHEN 'XXS' THEN 1 WHEN 'XS' THEN 2 WHEN 'S' THEN 3 WHEN 'M' THEN 4
             WHEN 'L' THEN 5 WHEN 'XL' THEN 6 WHEN 'XXL' THEN 7 WHEN 'XXXL' THEN 8 ELSE 20 END,
-            p.size COLLATE NOCASE,p.sku""", (code, code, color)).fetchall()
+            p.size COLLATE NOCASE,p.sku"""
+        if color:
+            condition = "((TRIM(p.item)=? AND UPPER(TRIM(p.color))=UPPER(?)) OR p.sku=?)"
+            params = (code, color, code)
+        else:
+            condition = "p.sku=?"
+            params = (code,)
+        return db.execute(sql.format(condition=condition), params).fetchall()
 
 
 def answer(text):
@@ -65,18 +78,20 @@ def answer(text):
         parts = clean.split(maxsplit=1)
         command = parts[0].split("@", 1)[0].lower()
         if command == "/start" or command == "/help":
-            return "Buscador de talles del depósito.\nEnviá: CÓDIGO COLOR\nEjemplo: 84628 BLK\nTambién podés usar /buscar 84628 BLK."
+            return "Buscador del depósito.\nPor artículo y color: enviá CÓDIGO COLOR (ej. 84628 BLK) para listar talles.\nPor prenda: enviá el SKU/código de barras solo.\nTambién podés usar /buscar."
         if command == "/buscar":
             clean = parts[1] if len(parts) > 1 else ""
         else:
             return "No reconozco ese comando. Enviá CÓDIGO COLOR, por ejemplo: 84628 BLK."
     pieces = clean.replace(",", " ").split()
-    if len(pieces) != 2:
-        return "Enviá el código del artículo y el color separados por espacio. Ejemplo: 84628 BLK"
-    code, color = pieces
+    if len(pieces) not in (1, 2):
+        return "Enviá SKU/código de barras solo, o código de artículo y color. Ejemplos: 0198077721550 · 84628 BLK"
+    code = pieces[0]
+    color = pieces[1] if len(pieces) == 2 else None
     results = search(code, color)
     if not results:
-        return f"No encontré talles para código {code} y color {color}. Revisá el código de artículo (item) y el color."
+        description = f"código {code}" + (f" y color {color}" if color else "")
+        return f"No encontré prendas para {description}. Si buscás un artículo, usá item + color; para una prenda puntual, enviá su SKU completo."
     first = results[0]
     lines = [f"{first['name']}", f"Artículo: {first['item']} · Color: {first['color']}", "Talles y ubicaciones:"]
     for row in results[:35]:
@@ -128,10 +143,10 @@ def main():
                 try:
                     handle(update)
                 except Exception as exc:
-                    print(f"Could not process Telegram update ({type(exc).__name__}).", flush=True)
+                    print(f"Could not process Telegram update: {exc}.", flush=True)
                 offset = update["update_id"] + 1
         except Exception as exc:
-            print(f"Telegram polling error ({type(exc).__name__}); retrying in 5 seconds.", flush=True)
+            print(f"Telegram polling error: {exc}; retrying in 5 seconds.", flush=True)
             time.sleep(5)
 
 
