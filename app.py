@@ -514,6 +514,32 @@ def products():
     return render_template("products.html", products=rows, q=q, code=code, sites=sites, archived=archived)
 
 
+@app.get("/buscar-talles")
+@login_required
+def size_finder():
+    code = request.args.get("codigo", "").strip()
+    color = request.args.get("color", "").strip()
+    rows = []
+    searched = bool(request.args)
+    if code and color:
+        rows = get_db().execute("""SELECT p.sku,p.name,p.item,p.color,p.size,
+          COALESCE(SUM(CASE WHEN c.is_virtual=0 AND c.active=1 THEN s.quantity ELSE 0 END),0) physical_units,
+          GROUP_CONCAT(CASE
+            WHEN c.is_virtual=1 AND c.active=1 THEN 'DEPOSITO VIRTUAL · listo para PICK'
+            WHEN c.is_virtual=0 AND c.active=1 AND s.quantity>0 THEN c.name || ' (' || s.quantity || ')'
+          END, ' · ') locations
+          FROM products p
+          LEFT JOIN stock s ON s.product_id=p.id
+          LEFT JOIN containers c ON c.id=s.container_id
+          WHERE p.active=1 AND (TRIM(p.item)=? OR p.sku=?) AND UPPER(TRIM(p.color))=UPPER(?)
+          GROUP BY p.id
+          ORDER BY CASE UPPER(TRIM(p.size))
+            WHEN 'XXS' THEN 1 WHEN 'XS' THEN 2 WHEN 'S' THEN 3 WHEN 'M' THEN 4
+            WHEN 'L' THEN 5 WHEN 'XL' THEN 6 WHEN 'XXL' THEN 7 WHEN 'XXXL' THEN 8 ELSE 20 END,
+            p.size COLLATE NOCASE,p.sku""", (code,code,color)).fetchall()
+    return render_template("size_finder.html", results=rows, code=code, color=color, searched=searched)
+
+
 @app.post("/productos/<int:product_id>/archivar")
 @login_required
 def archive_product(product_id):

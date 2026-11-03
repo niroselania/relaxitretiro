@@ -13,6 +13,8 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
 - Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
+- Buscador de talles por código de artículo (`item`) o código de barras, combinado con color; muestra todos los talles, ubicaciones y cantidades físicas.
+- Bot de Telegram para consultar talles y ubicaciones enviando `CÓDIGO COLOR` o `/buscar CÓDIGO COLOR`.
 - El catálogo permite archivar referencias que no se tienen y restaurarlas si hace falta.
 - Stock por contenedor, consulta y búsqueda por ubicación.
 - Lector de código por teclado USB (los lectores configurados como teclado suelen enviar el código y Enter).
@@ -44,8 +46,20 @@ En Portainer, creá un Stack y pegá el contenido de `compose-portainer.yaml`. E
 - `ADMIN_PASSWORD`: contraseña inicial larga.
 - `PORT`: puerto HTTP publicado (por defecto `8001`).
 - `SESSION_COOKIE_SECURE`: dejalo `false` si entrás por HTTP directo. Ponelo en `true` cuando el sitio quede detrás de HTTPS.
+- `TELEGRAM_BOT_TOKEN`: token privado creado con `@BotFather`; nunca lo publiques en GitHub.
+- `TELEGRAM_ALLOWED_USER_IDS`: IDs de Telegram autorizados, separados por coma. Dejalo vacío al primer deploy para obtener tu ID con `/id`; luego completalo y redeployá.
 
 Portainer crea el volumen `deposito_data`; ahí persiste la base SQLite aunque se reemplace el contenedor. No borres ese volumen al actualizar.
+
+### 2.1. Vincular el bot de Telegram
+
+1. En Telegram, abrí `@BotFather`, enviá `/newbot` y seguí los pasos para recibir el token.
+2. En las variables del Stack de Portainer, cargá `TELEGRAM_BOT_TOKEN` y dejá por ahora vacío `TELEGRAM_ALLOWED_USER_IDS`. Redesplegá el Stack.
+3. Abrí un chat privado con el bot, tocá **Start** y enviá `/id`. El bot devuelve tu user ID, pero todavía no consulta el inventario.
+4. En Portainer, agregá ese número a `TELEGRAM_ALLOWED_USER_IDS` y redesplegá.
+5. En el chat privado, enviá el código de artículo (`item`) y color, por ejemplo `84628 BLK`, o `/buscar 84628 BLK`. También acepta el código de barras completo; ese devuelve la variante asociada.
+
+El bot usa long polling, comparte la base SQLite del Stack y requiere salida a Internet desde el contenedor. No publiques el token ni lo agregues a GitHub. El bot usa `getUpdates`; si ese bot ya tiene un webhook configurado, eliminá el webhook antes de iniciar este servicio, porque Telegram no permite usar ambos métodos a la vez.
 
 ### 3. Primer ingreso
 

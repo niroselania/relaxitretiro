@@ -13,6 +13,19 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
     volumes:
       - deposito_data:/data
+  telegram-bot:
+    image: deposito-stock:1.0
+    container_name: deposito-stock-telegram
+    command: ["python", "telegram_bot.py"]
+    restart: unless-stopped
+    depends_on:
+      - deposito
+    environment:
+      DATABASE_PATH: /data/deposito.sqlite3
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Definí TELEGRAM_BOT_TOKEN en Portainer}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+    volumes:
+      - deposito_data:/data
 
 volumes:
   deposito_data:
