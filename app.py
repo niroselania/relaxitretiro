@@ -27,7 +27,8 @@ app.config.update(
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL
+  id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'consulta' CHECK(role IN ('admin','consulta'))
 );
 CREATE TABLE IF NOT EXISTS containers (
   id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
@@ -85,6 +86,7 @@ def init_db():
     db.executescript(SCHEMA)
     # Keep existing local databases usable when new product and site fields are added.
     for table, column, declaration in [
+        ("users", "role", "TEXT NOT NULL DEFAULT 'consulta'"),
         ("containers", "site", "TEXT NOT NULL DEFAULT 'Bariloche'"),
         ("containers", "parent_id", "INTEGER REFERENCES containers(id)"),
         ("containers", "is_virtual", "INTEGER NOT NULL DEFAULT 0"),
@@ -104,8 +106,9 @@ def init_db():
     if not app.config["SECRET_KEY"] or not password:
         raise RuntimeError("Configurá SECRET_KEY y ADMIN_PASSWORD antes de iniciar el sistema.")
     if not db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
-        db.execute("INSERT INTO users(username, password_hash) VALUES (?, ?)",
+        db.execute("INSERT INTO users(username, password_hash, role) VALUES (?, ?, 'admin')",
                    (username, generate_password_hash(password)))
+    db.execute("UPDATE users SET role='admin' WHERE username=?", (username,))
     if not db.execute("SELECT 1 FROM containers WHERE is_virtual=1 AND active=1").fetchone():
         last = db.execute("SELECT MAX(CAST(code AS INTEGER)) FROM containers WHERE code GLOB '[0-9]*' AND length(code)=12").fetchone()[0]
         candidate = (int(last) + 1) if last else 1
@@ -126,6 +129,24 @@ def login_required(view):
     def wrapped(*args, **kwargs):
         if "user_id" not in session:
             return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if session.get("role") != "admin":
+            abort(403, "Esta acción requiere permisos de administrador.")
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def admin_for_writes(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if request.method != "GET" and session.get("role") != "admin":
+            abort(403, "El perfil de consulta no puede modificar información.")
         return view(*args, **kwargs)
     return wrapped
 
@@ -169,6 +190,7 @@ def login():
             session.clear()
             session["user_id"] = user["id"]
             session["username"] = user["username"]
+            session["role"] = user["role"]
             session["csrf_token"] = secrets.token_urlsafe(24)
             return redirect(url_for("dashboard"))
         flash("Usuario o contraseña incorrectos.", "error")
@@ -203,6 +225,34 @@ def account():
             flash("Contraseña actualizada.", "success")
             return redirect(url_for("account"))
     return render_template("account.html")
+
+
+@app.route("/usuarios", methods=["GET", "POST"])
+@login_required
+@admin_required
+def users_admin():
+    db = get_db()
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        role = request.form.get("role", "consulta")
+        if len(username) < 3 or len(username) > 40:
+            flash("El usuario debe tener entre 3 y 40 caracteres.", "error")
+        elif len(password) < 12:
+            flash("La contraseña debe tener al menos 12 caracteres.", "error")
+        elif role not in ("admin", "consulta"):
+            flash("Seleccioná un perfil válido.", "error")
+        else:
+            try:
+                db.execute("INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
+                           (username, generate_password_hash(password), role))
+                db.commit()
+                flash(f"Usuario {username} creado con perfil {role}.", "success")
+                return redirect(url_for("users_admin"))
+            except sqlite3.IntegrityError:
+                flash("Ese nombre de usuario ya existe.", "error")
+    users = db.execute("SELECT id,username,role FROM users ORDER BY username COLLATE NOCASE").fetchall()
+    return render_template("users.html", users=users)
 
 
 @app.route("/")
@@ -254,6 +304,7 @@ def containers():
 
 @app.post("/contenedores/nuevo")
 @login_required
+@admin_required
 def create_container():
     name = request.form.get("name", "").strip()
     location = request.form.get("location", "").strip()
@@ -284,6 +335,7 @@ def create_container():
 
 @app.post("/contenedores/crear-lote")
 @login_required
+@admin_required
 def create_container_batch():
     prefix = request.form.get("prefix", "").strip()
     location = request.form.get("location", "").strip()
@@ -361,6 +413,7 @@ def container_detail(container_id):
 
 @app.post("/contenedores/<int:container_id>/editar")
 @login_required
+@admin_required
 def edit_container(container_id):
     db = get_db()
     container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
@@ -402,6 +455,7 @@ def edit_container(container_id):
 
 @app.post("/contenedores/<int:container_id>/productos/<int:product_id>/quitar")
 @login_required
+@admin_required
 def remove_container_product(container_id, product_id):
     db = get_db()
     row = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (container_id, product_id)).fetchone()
@@ -418,6 +472,7 @@ def remove_container_product(container_id, product_id):
 
 @app.post("/contenedores/<int:container_id>/eliminar")
 @login_required
+@admin_required
 def delete_container(container_id):
     db = get_db()
     container = db.execute("SELECT * FROM containers WHERE id=? AND active=1", (container_id,)).fetchone()
@@ -552,6 +607,7 @@ def size_finder():
 
 @app.post("/productos/<int:product_id>/archivar")
 @login_required
+@admin_required
 def archive_product(product_id):
     db = get_db()
     product = db.execute("SELECT id FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
@@ -569,6 +625,7 @@ def archive_product(product_id):
 
 @app.post("/productos/<int:product_id>/restaurar")
 @login_required
+@admin_required
 def restore_product(product_id):
     db = get_db()
     if not db.execute("SELECT 1 FROM products WHERE id=? AND active=0", (product_id,)).fetchone():
@@ -581,6 +638,7 @@ def restore_product(product_id):
 
 @app.post("/productos/nuevo")
 @login_required
+@admin_required
 def create_product():
     sku = request.form.get("sku", "").strip()
     name = request.form.get("name", "").strip()
@@ -635,6 +693,7 @@ def scan():
 
 @app.route("/movimientos", methods=["GET", "POST"])
 @login_required
+@admin_for_writes
 def movements():
     db = get_db()
     if request.method == "POST":
@@ -768,6 +827,7 @@ def import_elementos_sheet(db, sheet):
 
 @app.route("/importar", methods=["GET", "POST"])
 @login_required
+@admin_for_writes
 def import_data():
     if request.method == "POST":
         upload = request.files.get("file")

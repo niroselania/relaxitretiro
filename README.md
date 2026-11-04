@@ -4,7 +4,8 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 
 ## Funciones incluidas
 
-- Inicio de sesión y cambio de contraseña desde **Cuenta**.
+- Inicio de sesión con perfiles **Administrador** y **Solo consulta**. Los administradores crean usuarios desde **Usuarios**; la contraseña inicial debe tener al menos 12 caracteres.
+- El perfil de consulta puede ver productos, ubicaciones, stock, etiquetas e historial. No puede crear o modificar productos/contendedores, importar planillas ni registrar movimientos; los permisos se validan en el servidor.
 - Alta de contenedores y generación automática de un código numérico de 12 dígitos.
 - Creación por lote de hasta 500 contenedores con prefijo y rango numérico, cada uno con código de barras propio.
 - Desde la ficha del contenedor principal se pueden crear los racks por lote como sus subcontenedores.
@@ -94,10 +95,14 @@ Las filas de stock relacionan cada SKU con un contenedor mediante sus códigos. 
 - `compose.yaml`: misma configuración, con nombre Compose moderno.
 - `compose-portainer.yaml`: Stack para Portainer usando una imagen ya construida.
 
-## Consideraciones de esta primera entrega
+## Usuarios y permisos
 
-- Usa un solo usuario administrador inicial; no incluye perfiles de permisos ni multiusuario.
-- La consulta por código busca el código del contenedor o SKU exacto. El lector funciona como teclado USB.
+El usuario inicial configurado con `ADMIN_USERNAME` se crea como administrador. Después del primer ingreso, abrí **Usuarios** para crear otros accesos y elegir si serán administradores o de solo consulta. Cada cuenta usa su propio nombre de usuario y contraseña; se recomienda cambiar la contraseña inicial desde **Cuenta**. La base ya existente se migra automáticamente al iniciar: el usuario inicial queda como administrador y los usuarios ya existentes quedan como consulta hasta que el administrador les cree una cuenta nueva con el perfil apropiado.
+
+- **Administrador:** puede operar el depósito y administrar usuarios.
+- **Solo consulta:** puede consultar el inventario, las ubicaciones, los productos y el historial.
+
+La consulta por código busca el código del contenedor o SKU exacto. El lector funciona como teclado USB.
 - La impresión de etiquetas usa una medida inicial de 88 × 50 mm; puede ajustarse a la impresora y etiquetas disponibles.
 - Los códigos nuevos son números secuenciales de 12 cifras impresos en Code 128. Si los códigos del sistema anterior usan otra simbología o longitud, el importador mantiene su texto, pero conviene comparar una etiqueta antes de imprimir lotes.
 - SQLite funciona bien para un depósito chico. La base se mantiene en un único volumen para facilitar copias de seguridad y restauración.
