@@ -97,7 +97,7 @@ Las filas de stock relacionan cada SKU con un contenedor mediante sus códigos. 
 
 ## Usuarios y permisos
 
-El usuario inicial configurado con `ADMIN_USERNAME` se crea como administrador. Después del primer ingreso, abrí **Usuarios** para crear otros accesos y elegir si serán administradores o de solo consulta. Cada cuenta usa su propio nombre de usuario y contraseña; se recomienda cambiar la contraseña inicial desde **Cuenta**. La base ya existente se migra automáticamente al iniciar: el usuario inicial queda como administrador y los usuarios ya existentes quedan como consulta hasta que el administrador les cree una cuenta nueva con el perfil apropiado.
+El usuario inicial configurado con `ADMIN_USERNAME` se crea como administrador. Si se cambió esa variable después de la instalación y ya no hay administradores, el sistema recupera el acceso de administrador para la cuenta más antigua. Después del ingreso, abrí **Usuarios** para crear otros accesos y elegir si serán administradores o de solo consulta. Cada cuenta usa su propio nombre de usuario y contraseña; se recomienda cambiar la contraseña inicial desde **Cuenta**. La base existente se migra automáticamente al iniciar, sin borrar sus datos.
 
 - **Administrador:** puede operar el depósito y administrar usuarios.
 - **Solo consulta:** puede consultar el inventario, las ubicaciones, los productos y el historial.

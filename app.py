@@ -109,6 +109,10 @@ def init_db():
         db.execute("INSERT INTO users(username, password_hash, role) VALUES (?, ?, 'admin')",
                    (username, generate_password_hash(password)))
     db.execute("UPDATE users SET role='admin' WHERE username=?", (username,))
+    # Keep the installation recoverable if ADMIN_USERNAME changed after setup.
+    # The oldest account is the original owner account in existing installations.
+    db.execute("UPDATE users SET role='admin' WHERE id=(SELECT MIN(id) FROM users) "
+               "AND NOT EXISTS (SELECT 1 FROM users WHERE role='admin')")
     if not db.execute("SELECT 1 FROM containers WHERE is_virtual=1 AND active=1").fetchone():
         last = db.execute("SELECT MAX(CAST(code AS INTEGER)) FROM containers WHERE code GLOB '[0-9]*' AND length(code)=12").fetchone()[0]
         candidate = (int(last) + 1) if last else 1
@@ -160,11 +164,26 @@ def protect_forms():
             abort(400, "La sesión del formulario venció. Volvé a cargar la pantalla.")
 
 
+@app.before_request
+def refresh_session_role():
+    # Roles live in SQLite; refresh the cookie on every request so a role
+    # migration or admin recovery takes effect without requiring a new login.
+    user_id = session.get("user_id")
+    if user_id:
+        user = get_db().execute("SELECT username, role FROM users WHERE id=?", (user_id,)).fetchone()
+        if user:
+            session["username"] = user["username"]
+            session["role"] = user["role"]
+        else:
+            session.clear()
+
+
 @app.context_processor
 def inject_template_values():
     if "csrf_token" not in session:
         session["csrf_token"] = secrets.token_urlsafe(24)
-    return {"csrf_token": session["csrf_token"], "active_path": request.path}
+    return {"csrf_token": session["csrf_token"], "active_path": request.path,
+            "current_role": session.get("role")}
 
 
 @app.template_filter("qty")
