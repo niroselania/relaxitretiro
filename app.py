@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY, sku TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
   item TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '', legacy_units INTEGER NOT NULL DEFAULT 0,
+  virtual_units INTEGER NOT NULL DEFAULT 0,
   source_location TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
@@ -94,6 +95,7 @@ def init_db():
         ("products", "color", "TEXT NOT NULL DEFAULT ''"),
         ("products", "size", "TEXT NOT NULL DEFAULT ''"),
         ("products", "legacy_units", "INTEGER NOT NULL DEFAULT 0"),
+        ("products", "virtual_units", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "source_location", "TEXT NOT NULL DEFAULT ''"),
         ("products", "active", "INTEGER NOT NULL DEFAULT 1"),
         ("movements", "from_source", "TEXT NOT NULL DEFAULT 'external'"),
@@ -748,7 +750,7 @@ def movements():
                     raise ValueError("El Depósito Virtual solo se puede usar como origen PICK.")
                 with db:
                     for pid, quantity in quantities.items():
-                        product = db.execute("SELECT id,legacy_units,name FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+                        product = db.execute("SELECT id,legacy_units,virtual_units,name FROM products WHERE id=? AND active=1", (pid,)).fetchone()
                         if not product:
                             raise ValueError("Uno de los productos escaneados no existe o está archivado.")
                         if legacy_source:
@@ -757,7 +759,9 @@ def movements():
                             db.execute("UPDATE products SET legacy_units=legacy_units-? WHERE id=?", (quantity, pid))
                             source_label = "legacy"
                         elif source_container and source_container["is_virtual"]:
-                            # Virtual source intentionally has no physical balance to decrement.
+                            if product["virtual_units"] < quantity:
+                                raise ValueError(f"No hay {quantity} unidades disponibles de {product['name']} en el Depósito Virtual.")
+                            db.execute("UPDATE products SET virtual_units=virtual_units-? WHERE id=?", (quantity, pid))
                             source_label = "virtual"
                         else:
                             available = db.execute("SELECT quantity FROM stock WHERE container_id=? AND product_id=?", (from_id, pid)).fetchone()
@@ -831,11 +835,12 @@ def import_elementos_sheet(db, sheet):
         if not virtual:
             raise ValueError("No se encontró el Depósito Virtual. Reiniciá el servicio para actualizarlo.")
         for item in cleaned:
-            db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,source_location,created_at)
-              VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
+            db.execute("""INSERT INTO products(sku,name,item,color,size,description,legacy_units,virtual_units,source_location,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sku) DO UPDATE SET
               name=excluded.name,item=excluded.item,color=excluded.color,size=excluded.size,
-              description=excluded.description,source_location=excluded.source_location,legacy_units=0,active=1""",
-              (item[0],item[1],item[2],item[3],item[4],item[5],0,item[7],now_text()))
+              description=excluded.description,source_location=excluded.source_location,
+              virtual_units=excluded.virtual_units,legacy_units=0,active=1""",
+              (item[0],item[1],item[2],item[3],item[4],item[5],0,item[6],item[7],now_text()))
             product_id = db.execute("SELECT id FROM products WHERE sku=?", (item[0],)).fetchone()[0]
             # Zero quantity records membership in the virtual source without claiming real stock.
             db.execute("INSERT INTO stock(container_id,product_id,quantity) VALUES(?,?,0) ON CONFLICT(container_id,product_id) DO NOTHING",
@@ -858,7 +863,7 @@ def import_data():
             if "elementos" in workbook.sheetnames:
                 db = get_db()
                 count, total_units, location_count = import_elementos_sheet(db, workbook["elementos"])
-                flash(f"Importación lista: {count:,} productos cargados en DEPOSITO VIRTUAL para PICK. Las cantidades de la columna unidades ({total_units:,}) no se tomaron como stock real.".replace(",", "."), "success")
+                flash(f"Importación lista: {count:,} productos cargados en DEPOSITO VIRTUAL con {total_units:,} unidades lógicas para PICK. No se sumaron al stock físico.".replace(",", "."), "success")
                 return redirect(url_for("import_data"))
             if not {"Contenedores", "Productos", "Stock"}.issubset(workbook.sheetnames):
                 raise ValueError("No encontré la hoja elementos ni la plantilla con hojas Contenedores, Productos y Stock.")

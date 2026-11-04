@@ -21,10 +21,10 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Lector de código por teclado USB (los lectores configurados como teclado suelen enviar el código y Enter).
 - Ingresos, salidas y traslados, con control de cantidad disponible y registro de movimientos.
 - Flujo PICK para traslados por lote: escaneá el código del contenedor de origen y destino, luego las etiquetas de varias prendas; cada lectura suma una unidad y el lote se aplica al confirmar.
-- Depósito Virtual aislado, creado automáticamente: recibe el catálogo importado y sirve como origen PICK sin saldo físico inicial; solo el rack físico de destino suma stock.
+- Depósito Virtual aislado, creado automáticamente: recibe el catálogo y las cantidades lógicas importadas; cada PICK descuenta ese saldo y suma stock únicamente al rack físico de destino.
 - Importación y exportación de contenedores, productos y stock en Excel.
 
-El importador admite la planilla original de productos con una hoja `elementos` (con o sin la columna opcional `ubicaciones`) y la plantilla de tres hojas. En la hoja `elementos`, `codigo` se conserva como SKU de la prenda y los productos se asocian al Depósito Virtual. La columna `unidades` se valida, pero no se usa como conteo físico ni limita los PICK. Cada movimiento desde el origen virtual registra las unidades en el rack de destino. La importación no carga el historial anterior de movimientos. La importación hace altas/actualizaciones de los códigos incluidos y conserva los códigos existentes; las filas que no aparezcan en un nuevo archivo no se eliminan automáticamente.
+El importador admite la planilla original de productos con una hoja `elementos` (con o sin la columna opcional `ubicaciones`) y la plantilla de tres hojas. En la hoja `elementos`, `codigo` se conserva como SKU de la prenda y los productos se asocian al Depósito Virtual. La columna `unidades` queda como saldo lógico disponible para PICK, separado del stock físico; cada movimiento descuenta ese saldo y suma las unidades al rack de destino. La ficha del Depósito Virtual muestra SKU, código de artículo, color, talle y saldo disponible. La importación no carga el historial anterior de movimientos. La importación hace altas/actualizaciones de los códigos incluidos y conserva los códigos existentes; las filas que no aparezcan en un nuevo archivo no se eliminan automáticamente.
 
 ## Despliegue desde Portainer
 
