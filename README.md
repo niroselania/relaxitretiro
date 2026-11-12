@@ -13,6 +13,7 @@ Primera versión de un sistema web de depósito para ejecutar como contenedor Do
 - Edición de nombre y ubicación, cambio de depósito para un contenedor principal y movimiento de contenedores dentro de otros; el cambio de depósito se propaga a las cajas hijas.
 - Retiro de artículos de un contenedor y eliminación de contenedores o de toda una rama, con ajuste de stock registrado en el historial.
 - Etiquetas imprimibles con código de barras Code 128. Los códigos importados se conservan y no se reciclan.
+- **Etiquetas de prendas** (menú debajo de Usuarios): buscá por código de artículo (`item`), opcionalmente con color, o por SKU; elegí las prendas y la cantidad de copias, e imprimí etiquetas de 4 × 2 cm (o 4 × 2 pulgadas) con código, color, talle y el SKU como código de barras Code 128. Cada etiqueta sale en una página del tamaño elegido, lista para impresoras de rollo.
 - Catálogo de productos con columnas de código, nombre, item, color, talle, descripción, unidades y ubicación. El listado permite ver Bariloche, Retiro o ambos; no incluye Centro de Distribución.
 - Buscador de talles por código de artículo (`item`) o código de barras, combinado con color; muestra todos los talles, ubicaciones y cantidades físicas.
 - Bot de Telegram para consultar talles y ubicaciones enviando `CÓDIGO COLOR` o `/buscar CÓDIGO COLOR`.

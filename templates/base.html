@@ -19,6 +19,7 @@
     <a class="nav-link {% if active_path.startswith('/lector') %}active{% endif %}" href="{{ url_for('scan') }}"><span>▣</span> Lector de barras</a>
     <a class="nav-link {% if active_path.startswith('/movimientos') %}active{% endif %}" href="{{ url_for('movements') }}"><span>⇄</span> Movimientos</a>
     {% if current_role == 'admin' %}<a class="nav-link {% if active_path.startswith('/usuarios') %}active{% endif %}" href="{{ url_for('users_admin') }}"><span>♙</span> Usuarios</a>{% endif %}
+    <a class="nav-link {% if active_path.startswith('/etiquetas-prendas') %}active{% endif %}" href="{{ url_for('garment_labels') }}"><span>▭</span> Etiquetas de prendas</a>
   </nav>
   <div class="nav-label tools-label">HERRAMIENTAS</div>
   <nav>
